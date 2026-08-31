@@ -123,10 +123,11 @@ using TOML: TOML
         @test_throws ArgumentError GlobalOptions(10, "accept-new", true, -10)
 
         # Push Options Validation
-        p_valid = PushOptions("/local/src", ["*.tmp"], true)
+        p_valid = PushOptions("/local/src", ["*.tmp"], true, true)
         @test p_valid.local_source_dir == "/local/src"
         @test p_valid.excludes == ["*.tmp"]
         @test p_valid.require_clean_git == true
+        @test p_valid.use_gitignore == true
         @test_throws ArgumentError PushOptions("")
 
         # Pull Options Validation
@@ -278,6 +279,7 @@ using TOML: TOML
         @test "--partial" in push_cmd.exec
         @test "-z" in push_cmd.exec
         @test "--bwlimit=2048" in push_cmd.exec
+        @test "--filter=:- .gitignore" in push_cmd.exec
         @test "--exclude=.git" in push_cmd.exec
         @test "--exclude=*.tmp" in push_cmd.exec
         @test "-e" in push_cmd.exec

@@ -81,6 +81,7 @@ excludes = [
     "data/output",
     "harvested_results",
 ]
+use_gitignore = true
 require_clean_git = false
 
 [pull]
