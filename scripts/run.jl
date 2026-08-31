@@ -1,5 +1,10 @@
 #!/usr/bin/env julia
 
+using Pkg
+const PROJECT_ROOT = dirname(@__DIR__)
+Pkg.activate(PROJECT_ROOT; io = devnull)
+Pkg.instantiate(; io = devnull)
+
 using SshDataBridge
 
 """
