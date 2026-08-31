@@ -1,0 +1,12 @@
+name = "SshDataBridge"
+uuid = "a37c1541-b844-4821-b3b3-8ec236b28b74"
+authors = ["Paul-Adrian Gogîță <gogitapaul@yahoo.ro>"]
+version = "0.1.0"
+license = "MIT"
+
+[deps]
+TOML = "fa267f1f-6049-4f14-aa54-33bafae1ed76"
+
+[compat]
+TOML = "1"
+julia = "1.10, 1.11, 1.12"

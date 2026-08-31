@@ -1,0 +1,27 @@
+# Real configuration with credentials
+config.toml
+.env
+credentials.toml
+*.local.toml
+
+# Harvested simulation data & caches
+data/
+output/
+harvested_results/
+*.h5
+*.jld2
+*.csv
+*.arrow
+
+# Julia environment artifacts
+*.jl.cov
+*.jl.*.cov
+*.jl.mem
+/Manifest.toml
+
+# System & editor artifacts
+.DS_Store
+*.swp
+*~
+.vscode/
+.idea/
