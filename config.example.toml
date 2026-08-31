@@ -53,6 +53,9 @@ excludes = [
 # Collision handling strategy if local destination directory already exists
 collision_strategy = "resume"  # one of: "resume" | "backup" | "abort"
 
+# Safely purge the remote project directory upon 100% successful harvest
+clean_remote_after_pull = false  # one of: true | false
+
 [[targets]]
 # Unique human-readable label
 name = "Cluster-Node-01"

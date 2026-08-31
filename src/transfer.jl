@@ -168,19 +168,26 @@ end
         target::BridgeTarget,
         config::BridgeConfig;
         dry_run::Bool = false,
+        clean_remote::Union{Bool, Nothing} = nothing,
     )::TransferResult
 
 Harvest simulation output artifacts from a single remote target node.
+If `clean_remote` is true (or defaults to `config.pull.clean_remote_after_pull`), the remote project directory
+is safely purged upon 100% successful harvest.
 """
 function pull_target(target::BridgeTarget,
                      config::BridgeConfig;
-                     dry_run::Bool=false)::TransferResult
+                     dry_run::Bool=false,
+                     clean_remote::Union{Bool, Nothing}=nothing)::TransferResult
     t_start = time()
     local_dir = joinpath(config.pull.local_destination_root, target.name)
+    should_clean = clean_remote !== nothing ? clean_remote :
+                   config.pull.clean_remote_after_pull
 
     if dry_run
         cmd = build_pull_command(target, config.globals, config.pull, local_dir)
-        return TransferResult(target, :pull, true, 0, 0.0, "Dry run: `$(cmd)`")
+        clean_note = should_clean ? " [Post-clean: rm -rf '$(target.remote_dir)']" : ""
+        return TransferResult(target, :pull, true, 0, 0.0, "Dry run: `$(cmd)`$(clean_note)")
     end
 
     dest_dir = prepare_local_pull_directory(target, config.pull)
@@ -192,9 +199,25 @@ function pull_target(target::BridgeTarget,
         p = run(pipeline(cmd; stdout=out_buf, stderr=err_buf); wait=true)
         duration = time() - t_start
         success = (p.exitcode == 0)
-        msg = success ? "Harvested successfully in $(round(duration; digits=2))s." :
-              "rsync exited with code $(p.exitcode): $(String(take!(err_buf)))"
-        return TransferResult(target, :pull, success, p.exitcode, duration, msg)
+
+        if success
+            base_msg = "Harvested successfully in $(round(duration; digits=2))s."
+            if should_clean
+                clean_res = clean_remote_target(target, config.globals; dry_run=false)
+                if clean_res.success
+                    msg = "$(base_msg) Remote project purged."
+                else
+                    msg = "$(base_msg) (Warning: remote cleanup failed: $(clean_res.message))"
+                end
+            else
+                msg = base_msg
+            end
+            return TransferResult(target, :pull, true, p.exitcode, duration, msg)
+        else
+            err_msg = String(take!(err_buf))
+            return TransferResult(target, :pull, false, p.exitcode, duration,
+                                  "rsync exited with code $(p.exitcode): $(err_msg)")
+        end
     catch e
         duration = time() - t_start
         err_msg = String(take!(err_buf))
@@ -228,18 +251,22 @@ end
     pull_all_targets(
         config::BridgeConfig;
         dry_run::Bool = false,
+        clean_remote::Union{Bool, Nothing} = nothing,
     )::Vector{TransferResult}
 
 Harvest simulation results from all configured remote targets in parallel.
 """
 function pull_all_targets(config::BridgeConfig;
-                          dry_run::Bool=false)::Vector{TransferResult}
+                          dry_run::Bool=false,
+                          clean_remote::Union{Bool, Nothing}=nothing)::Vector{TransferResult}
     if !dry_run
         check_local_binaries()
     end
-    @info "Dispatching parallel results harvest" total_targets=length(config.targets) destination=config.pull.local_destination_root dry_run=dry_run
+    should_clean = clean_remote !== nothing ? clean_remote :
+                   config.pull.clean_remote_after_pull
+    @info "Dispatching parallel results harvest" total_targets=length(config.targets) destination=config.pull.local_destination_root clean_remote=should_clean dry_run=dry_run
     tasks = map(config.targets) do target
-        @async pull_target(target, config; dry_run=dry_run)
+        @async pull_target(target, config; dry_run=dry_run, clean_remote=should_clean)
     end
     return fetch.(tasks)
 end

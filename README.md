@@ -89,6 +89,7 @@ output_subdir = "output"
 includes = []
 excludes = ["*.tmp", "core.*", "*~"]
 collision_strategy = "resume"
+clean_remote_after_pull = false
 
 [[targets]]
 name = "Cluster-Node-01"
@@ -120,13 +121,23 @@ julia --project=. scripts/run.jl push
 Download remote output artifacts into target-specific local subdirectories in parallel:
 ```bash
 julia --project=. scripts/run.jl pull
+
+# Optional: Harvest and automatically purge remote project folder upon 100% success:
+julia --project=. scripts/run.jl pull --clean-remote
+```
+
+### 4. Purge Remote Directories (`clean`)
+Safely remove remote project directories on demand:
+```bash
+julia --project=. scripts/run.jl clean
 ```
 
 ### Dry-Run Inspection
-Inspect constructed `rsync` commands and arguments without executing network transfers:
+Inspect constructed `rsync` and `ssh` commands and arguments without executing network transfers:
 ```bash
 julia --project=. scripts/run.jl push --dry-run
 julia --project=. scripts/run.jl pull --dry-run
+julia --project=. scripts/run.jl clean --dry-run
 ```
 
 ---

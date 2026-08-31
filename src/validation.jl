@@ -117,3 +117,25 @@ function validate_pull_options(local_destination_root::AbstractString,
     end
     return nothing
 end
+
+"""
+    validate_remote_path_safety(path::AbstractString, user::AbstractString)
+
+Validate that a remote directory path is sufficiently safe for recursive removal (`rm -rf`).
+Rejects root paths (`/`, `/root`, `/home`, `/home/user`, `/home/user/`, `~`, `.`) and paths with fewer than 2 directory components.
+"""
+function validate_remote_path_safety(path::AbstractString, user::AbstractString)
+    cleaned = strip(path)
+    if isempty(cleaned)
+        throw(ArgumentError("Remote path cannot be empty."))
+    end
+    normalized = normpath(cleaned)
+    if normalized in ("/", "/root", "/home", "/home/$(user)", "/home/$(user)/", "~", ".")
+        throw(ArgumentError("Unsafe remote directory deletion refused on critical path: '$(normalized)'."))
+    end
+    parts = filter(!isempty, split(normalized, '/'))
+    if length(parts) < 2
+        throw(ArgumentError("Remote path '$(normalized)' is too shallow for safe recursive deletion (minimum 2 path components required)."))
+    end
+    return nothing
+end
