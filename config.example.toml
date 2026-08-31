@@ -1,0 +1,88 @@
+# Configuration specification for SshDataBridge
+# Automates simulation payload deployment (push) and results harvesting (pull) over SSH/rsync
+
+[globals]
+# SSH connection timeout in seconds
+connect_timeout = 10  # integer > 0; units: s
+
+# SSH host key verification policy
+strict_host_key_checking = "accept-new"  # one of: "accept-new" | "yes" | "no"
+
+# rsync in-flight compression
+compress = true  # one of: true | false
+
+# Network bandwidth limit per transfer in KBytes/s (0 = unlimited)
+bandwidth_limit = 0  # integer >= 0
+
+[push]
+# Local source directory to deploy to remotes
+local_source_dir = "."  # path relative to this config file or absolute
+
+# Array of glob patterns excluded from deployment
+excludes = [
+    ".git",
+    ".github",
+    ".vscode",
+    "*.swp",
+    "*~",
+    "data/output",
+    "harvested_results",
+    "*.jl.cov",
+]
+
+# Require clean git working tree before allowing push
+require_clean_git = false  # one of: true | false
+
+[pull]
+# Local destination root where harvested outputs are saved
+local_destination_root = "data/harvested_results"  # path relative to this config file or absolute
+
+# Default relative output subdirectory on remotes
+output_subdir = "output"
+
+# Selective retrieval inclusion patterns (empty = all files)
+includes = []
+
+# Retrieval exclusion patterns
+excludes = [
+    "*.tmp",
+    "core.*",
+    "*~",
+]
+
+# Collision handling strategy if local destination directory already exists
+collision_strategy = "resume"  # one of: "resume" | "backup" | "abort"
+
+[[targets]]
+# Unique human-readable label
+name = "Cluster-Node-01"
+
+# Remote IPv4/IPv6 address or hostname
+host = "192.168.1.100"
+
+# SSH daemon port
+port = 22  # integer in range [1, 65535]
+
+# Remote username
+user = "scientist"
+
+# Authentication password
+password = "example_password_1"
+
+# Remote base directory for simulation campaign
+remote_dir = "/home/scientist/campaigns/sim_batch_01"
+
+# Remote output subdirectory relative to remote_dir (optional, defaults to [pull].output_subdir)
+output_subdir = "output"
+
+# Optional host key policy override
+strict_host_key_checking = "accept-new"
+
+[[targets]]
+name = "Cluster-Node-02"
+host = "192.168.1.101"
+port = 2222
+user = "engineer"
+password = "example_password_2"
+remote_dir = "/home/engineer/campaigns/sim_batch_01"
+output_subdir = "results"
