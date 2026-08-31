@@ -125,3 +125,75 @@ function ensure_remote_directory(target::BridgeTarget, globals::GlobalOptions,
         return false
     end
 end
+
+"""
+    clean_remote_target(
+        target::BridgeTarget,
+        globals::GlobalOptions;
+        dry_run::Bool = false,
+    )::TransferResult
+
+Safely remove the remote project directory (`target.remote_dir`) on a target machine over SSH.
+Validates that the path is not a critical system/user root before execution.
+"""
+function clean_remote_target(target::BridgeTarget,
+                             globals::GlobalOptions;
+                             dry_run::Bool=false)::TransferResult
+    t_start = time()
+    try
+        validate_remote_path_safety(target.remote_dir, target.user)
+    catch e
+        duration = time() - t_start
+        return TransferResult(target, :clean, false, -1, duration,
+                              "Safety refusal: $(sprint(showerror, e))")
+    end
+
+    ssh_args = build_ssh_base_command(target, globals)
+    cmd_args = String["sshpass", "-e"]
+    append!(cmd_args, ssh_args)
+    push!(cmd_args, "rm -rf -- '$(target.remote_dir)'")
+
+    cmd = setenv(Cmd(cmd_args), merge(copy(ENV), Dict("SSHPASS" => target.password)))
+
+    if dry_run
+        return TransferResult(target, :clean, true, 0, 0.0, "Dry run: `$(cmd)`")
+    end
+
+    out_buf = IOBuffer()
+    err_buf = IOBuffer()
+    try
+        p = run(pipeline(cmd; stdout=out_buf, stderr=err_buf); wait=true)
+        duration = time() - t_start
+        success = (p.exitcode == 0)
+        msg = success ?
+              "Remote directory '$(target.remote_dir)' purged successfully in $(round(duration; digits=2))s." :
+              "rm exited with code $(p.exitcode): $(String(take!(err_buf)))"
+        return TransferResult(target, :clean, success, p.exitcode, duration, msg)
+    catch e
+        duration = time() - t_start
+        err_msg = String(take!(err_buf))
+        detail = isempty(strip(err_msg)) ? sprint(showerror, e) : strip(err_msg)
+        return TransferResult(target, :clean, false, -1, duration,
+                              "Cleanup error: $(detail)")
+    end
+end
+
+"""
+    clean_all_remote_targets(
+        config::BridgeConfig;
+        dry_run::Bool = false,
+    )::Vector{TransferResult}
+
+Purge remote project directories across all configured targets in parallel.
+"""
+function clean_all_remote_targets(config::BridgeConfig;
+                                  dry_run::Bool=false)::Vector{TransferResult}
+    if !dry_run
+        check_local_binaries()
+    end
+    @info "Dispatching parallel remote project purge" total_targets=length(config.targets) dry_run=dry_run
+    tasks = map(config.targets) do target
+        @async clean_remote_target(target, config.globals; dry_run=dry_run)
+    end
+    return fetch.(tasks)
+end

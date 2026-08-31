@@ -37,11 +37,13 @@ function parse_config(dict::AbstractDict{String, Any};
     pull_excludes_raw = get(pull_raw, "excludes", Any["*.tmp", "core.*", "*~"])
     pull_excludes = String[String(strip(string(e))) for e in pull_excludes_raw]
     collision_strategy_raw = Symbol(get(pull_raw, "collision_strategy", "resume"))
+    clean_remote_after_pull = get(pull_raw, "clean_remote_after_pull", false)
     pull_opts = PullOptions(resolved_dest,
                             default_output_subdir,
                             pull_includes,
                             pull_excludes,
-                            collision_strategy_raw)
+                            collision_strategy_raw,
+                            clean_remote_after_pull)
 
     # 4. Parse Targets
     targets_raw = get(dict, "targets", nothing)

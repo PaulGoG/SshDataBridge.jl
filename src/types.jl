@@ -118,6 +118,7 @@ Configuration parameters governing remote simulation artifact retrieval to the l
 - `includes::Vector{String}`: Glob patterns to explicitly include during rsync retrieval.
 - `excludes::Vector{String}`: Glob patterns to exclude during retrieval.
 - `collision_strategy::Symbol`: Conflict handling strategy (`:resume`, `:backup`, `:abort`).
+- `clean_remote_after_pull::Bool`: If true, purges the remote project directory upon 100% successful harvest.
 """
 struct PullOptions
     local_destination_root::String
@@ -125,18 +126,21 @@ struct PullOptions
     includes::Vector{String}
     excludes::Vector{String}
     collision_strategy::Symbol
+    clean_remote_after_pull::Bool
 
     function PullOptions(local_destination_root::AbstractString,
                          output_subdir::AbstractString="output",
                          includes::AbstractVector=String[],
                          excludes::AbstractVector=String["*.tmp", "core.*", "*~"],
-                         collision_strategy::Symbol=:resume)
+                         collision_strategy::Symbol=:resume,
+                         clean_remote_after_pull::Bool=false)
         validate_pull_options(local_destination_root, output_subdir, collision_strategy)
         return new(String(strip(local_destination_root)),
                    String(strip(output_subdir)),
                    String[String(strip(string(i))) for i in includes],
                    String[String(strip(string(e))) for e in excludes],
-                   collision_strategy)
+                   collision_strategy,
+                   clean_remote_after_pull)
     end
 end
 

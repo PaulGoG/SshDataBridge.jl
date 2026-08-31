@@ -18,9 +18,11 @@ function print_usage()
              probe         Execute pre-flight connectivity, rsync, and path diagnostics
              push          Deploy local project tree to remote targets in parallel
              pull          Harvest simulation output artifacts from remote targets in parallel
+             clean         Safely purge remote project directories across targets in parallel
 
            Options:
              --config, -c <path>   Path to configuration TOML (default: config.toml)
+             --clean-remote        On pull: purge remote project directory upon successful harvest
              --dry-run             Print constructed commands without executing transfers
              --help, -h            Show this help manual
            """)
@@ -54,7 +56,13 @@ end
 Print formatted transfer outcome summary table.
 """
 function format_transfer_table(results::Vector{TransferResult}, action::Symbol)
-    action_str = action == :push ? "DEPLOYMENT (PUSH)" : "HARVESTING (PULL)"
+    action_str = if action == :push
+        "DEPLOYMENT (PUSH)"
+    elseif action == :pull
+        "HARVESTING (PULL)"
+    else
+        "PURGE (CLEAN)"
+    end
     println("\n" * "═"^80)
     println("  PARALLEL $(action_str) SUMMARY")
     println("═"^80)
@@ -77,9 +85,9 @@ function main(args::Vector{String}=ARGS)
     end
 
     action_str = lowercase(args[1])
-    if !(action_str in ("probe", "push", "pull"))
+    if !(action_str in ("probe", "push", "pull", "clean"))
         println(stderr,
-                "Error: Unknown action '$(action_str)'. Must be 'probe', 'push', or 'pull'.\n")
+                "Error: Unknown action '$(action_str)'. Must be 'probe', 'push', 'pull', or 'clean'.\n")
         print_usage()
         exit(1)
     end
@@ -87,6 +95,7 @@ function main(args::Vector{String}=ARGS)
 
     config_path = joinpath(dirname(@__DIR__), "config.toml")
     dry_run = false
+    clean_remote_flag = nothing
 
     idx = 2
     while idx <= length(args)
@@ -102,6 +111,9 @@ function main(args::Vector{String}=ARGS)
             end
         elseif arg == "--dry-run"
             dry_run = true
+            idx += 1
+        elseif arg == "--clean-remote"
+            clean_remote_flag = true
             idx += 1
         else
             println(stderr, "Error: Unrecognized option '$(arg)'.")
@@ -142,8 +154,13 @@ function main(args::Vector{String}=ARGS)
         all_passed = all(r -> r.success, results)
         exit(all_passed ? 0 : 2)
     elseif action == :pull
-        results = pull_all_targets(config; dry_run=dry_run)
+        results = pull_all_targets(config; dry_run=dry_run, clean_remote=clean_remote_flag)
         format_transfer_table(results, :pull)
+        all_passed = all(r -> r.success, results)
+        exit(all_passed ? 0 : 2)
+    elseif action == :clean
+        results = clean_all_remote_targets(config; dry_run=dry_run)
+        format_transfer_table(results, :clean)
         all_passed = all(r -> r.success, results)
         exit(all_passed ? 0 : 2)
     end

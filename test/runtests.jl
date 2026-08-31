@@ -23,8 +23,14 @@ using TOML: TOML
 
     @testset "Field Validation & Boundary Handling" begin
         # Valid Target
-        t = BridgeTarget("Node-01", "192.168.1.50", 22, "admin", "secret", "/opt/sims",
-                         "results", "accept-new")
+        t = BridgeTarget("Node-01",
+                         "192.168.1.50",
+                         22,
+                         "admin",
+                         "secret",
+                         "/opt/sims",
+                         "results",
+                         "accept-new")
         @test t.name == "Node-01"
         @test t.host == "192.168.1.50"
         @test t.port == 22
@@ -40,27 +46,70 @@ using TOML: TOML
         @test t_default.strict_host_key_checking === nothing
 
         # Target Validation Failures
-        @test_throws ArgumentError BridgeTarget("", "192.168.1.50", 22, "admin", "pass",
+        @test_throws ArgumentError BridgeTarget("",
+                                                "192.168.1.50",
+                                                22,
+                                                "admin",
+                                                "pass",
                                                 "/dir")
         @test_throws ArgumentError BridgeTarget("N1", "", 22, "admin", "pass", "/dir")
-        @test_throws ArgumentError BridgeTarget("N1", "192.168.1.1 0", 22, "admin", "pass",
+        @test_throws ArgumentError BridgeTarget("N1",
+                                                "192.168.1.1 0",
+                                                22,
+                                                "admin",
+                                                "pass",
                                                 "/dir")
-        @test_throws ArgumentError BridgeTarget("N1", "192.168.1.50", 0, "admin", "pass",
+        @test_throws ArgumentError BridgeTarget("N1",
+                                                "192.168.1.50",
+                                                0,
+                                                "admin",
+                                                "pass",
                                                 "/dir")
-        @test_throws ArgumentError BridgeTarget("N1", "192.168.1.50", 70000, "admin",
-                                                "pass", "/dir")
-        @test_throws ArgumentError BridgeTarget("N1", "192.168.1.50", 22, "", "pass",
+        @test_throws ArgumentError BridgeTarget("N1",
+                                                "192.168.1.50",
+                                                70000,
+                                                "admin",
+                                                "pass",
                                                 "/dir")
-        @test_throws ArgumentError BridgeTarget("N1", "192.168.1.50", 22, "admin user",
-                                                "pass", "/dir")
-        @test_throws ArgumentError BridgeTarget("N1", "192.168.1.50", 22, "admin", "",
+        @test_throws ArgumentError BridgeTarget("N1",
+                                                "192.168.1.50",
+                                                22,
+                                                "",
+                                                "pass",
                                                 "/dir")
-        @test_throws ArgumentError BridgeTarget("N1", "192.168.1.50", 22, "admin", "pass",
+        @test_throws ArgumentError BridgeTarget("N1",
+                                                "192.168.1.50",
+                                                22,
+                                                "admin user",
+                                                "pass",
+                                                "/dir")
+        @test_throws ArgumentError BridgeTarget("N1",
+                                                "192.168.1.50",
+                                                22,
+                                                "admin",
+                                                "",
+                                                "/dir")
+        @test_throws ArgumentError BridgeTarget("N1",
+                                                "192.168.1.50",
+                                                22,
+                                                "admin",
+                                                "pass",
                                                 "")
-        @test_throws ArgumentError BridgeTarget("N1", "192.168.1.50", 22, "admin", "pass",
-                                                "/dir", "")
-        @test_throws ArgumentError BridgeTarget("N1", "192.168.1.50", 22, "admin", "pass",
-                                                "/dir", "out", "invalid_policy")
+        @test_throws ArgumentError BridgeTarget("N1",
+                                                "192.168.1.50",
+                                                22,
+                                                "admin",
+                                                "pass",
+                                                "/dir",
+                                                "")
+        @test_throws ArgumentError BridgeTarget("N1",
+                                                "192.168.1.50",
+                                                22,
+                                                "admin",
+                                                "pass",
+                                                "/dir",
+                                                "out",
+                                                "invalid_policy")
 
         # Global Options Validation
         g_valid = GlobalOptions(15, "yes", true, 5000)
@@ -81,17 +130,38 @@ using TOML: TOML
         @test_throws ArgumentError PushOptions("")
 
         # Pull Options Validation
-        pull_valid = PullOptions("/local/dest", "output_dir", ["*.csv"], ["*.tmp"], :backup)
+        pull_valid = PullOptions("/local/dest",
+                                 "output_dir",
+                                 ["*.csv"],
+                                 ["*.tmp"],
+                                 :backup,
+                                 true)
         @test pull_valid.local_destination_root == "/local/dest"
         @test pull_valid.output_subdir == "output_dir"
         @test pull_valid.includes == ["*.csv"]
         @test pull_valid.excludes == ["*.tmp"]
         @test pull_valid.collision_strategy == :backup
+        @test pull_valid.clean_remote_after_pull == true
 
         @test_throws ArgumentError PullOptions("")
         @test_throws ArgumentError PullOptions("/local/dest", "")
-        @test_throws ArgumentError PullOptions("/local/dest", "output", String[], String[],
+        @test_throws ArgumentError PullOptions("/local/dest",
+                                               "output",
+                                               String[],
+                                               String[],
                                                :invalid_strategy)
+
+        # Remote Path Safety Validation
+        @test validate_remote_path_safety("/home/user/campaigns/sim01", "user") === nothing
+        @test validate_remote_path_safety("/scratch/paulgog/batch1", "paulgog") === nothing
+        @test_throws ArgumentError validate_remote_path_safety("", "user")
+        @test_throws ArgumentError validate_remote_path_safety("/", "user")
+        @test_throws ArgumentError validate_remote_path_safety("/root", "user")
+        @test_throws ArgumentError validate_remote_path_safety("/home", "user")
+        @test_throws ArgumentError validate_remote_path_safety("/home/user", "user")
+        @test_throws ArgumentError validate_remote_path_safety("/home/user/", "user")
+        @test_throws ArgumentError validate_remote_path_safety("~", "user")
+        @test_throws ArgumentError validate_remote_path_safety("/single", "user")
     end
 
     @testset "TOML Configuration Ingestion" begin
@@ -113,6 +183,7 @@ using TOML: TOML
         includes = ["*.jld2", "*.csv"]
         excludes = ["*.tmp"]
         collision_strategy = "backup"
+        clean_remote_after_pull = true
 
         [[targets]]
         name = "GPU-Worker-1"
@@ -152,6 +223,7 @@ using TOML: TOML
             @test config.pull.includes == ["*.jld2", "*.csv"]
             @test config.pull.excludes == ["*.tmp"]
             @test config.pull.collision_strategy == :backup
+            @test config.pull.clean_remote_after_pull == true
 
             @test length(config.targets) == 2
 
@@ -183,14 +255,19 @@ using TOML: TOML
         globals = GlobalOptions(12, "accept-new", true, 2048)
         push_opts = PushOptions("/local/workspace", [".git", "*.tmp"], false)
         pull_opts_resume = PullOptions("/local/harvest", "output", ["*.csv"], ["*.tmp"],
-                                       :resume)
+                                       :resume, false)
         pull_opts_backup = PullOptions("/local/harvest", "output", ["*.csv"], ["*.tmp"],
-                                       :backup)
+                                       :backup, true)
         pull_opts_abort = PullOptions("/local/harvest", "output", ["*.csv"], ["*.tmp"],
-                                      :abort)
+                                      :abort, false)
 
-        target = BridgeTarget("RTX-Node", "10.0.0.5", 2222, "paulgog", "p@ssword#1",
-                              "/srv/sim_01", "results")
+        target = BridgeTarget("RTX-Node",
+                              "10.0.0.5",
+                              2222,
+                              "paulgog",
+                              "p@ssword#1",
+                              "/srv/sim_01",
+                              "results")
 
         # Push Command Construction
         push_cmd = build_push_command(target, globals, push_opts)
@@ -224,7 +301,8 @@ using TOML: TOML
 
         # Collision Strategy Preparation
         mktempdir() do tmpdir
-            pull_test_opts = PullOptions(tmpdir, "output", String[], String[], :resume)
+            pull_test_opts = PullOptions(tmpdir, "output", String[], String[], :resume,
+                                         false)
             dest_dir = prepare_local_pull_directory(target, pull_test_opts)
             @test isdir(dest_dir)
             @test dest_dir == joinpath(tmpdir, "RTX-Node")
@@ -238,26 +316,28 @@ using TOML: TOML
             @test isfile(marker)
 
             # Backup renames existing directory
-            pull_backup_opts = PullOptions(tmpdir, "output", String[], String[], :backup)
+            pull_backup_opts = PullOptions(tmpdir, "output", String[], String[], :backup,
+                                           false)
             dest_dir3 = prepare_local_pull_directory(target, pull_backup_opts)
             @test isdir(dest_dir3)
             @test isdir("$(dest_dir3)#1")
             @test isfile(joinpath("$(dest_dir3)#1", "test.txt"))
 
             # Abort throws exception
-            pull_abort_opts = PullOptions(tmpdir, "output", String[], String[], :abort)
+            pull_abort_opts = PullOptions(tmpdir, "output", String[], String[], :abort,
+                                          false)
             @test_throws ErrorException prepare_local_pull_directory(target,
                                                                      pull_abort_opts)
         end
     end
 
-    @testset "Dry-Run Dispatch Execution" begin
+    @testset "Dry-Run Dispatch & Cleanup Execution" begin
         globals = GlobalOptions(10, "accept-new", true, 0)
         push_opts = PushOptions("/local/src", String[".git"], false)
-        pull_opts = PullOptions("/local/dst", "output", String[], String[], :resume)
+        pull_opts = PullOptions("/local/dst", "output", String[], String[], :resume, true)
 
-        target1 = BridgeTarget("Node-A", "10.0.0.1", 22, "admin", "p1", "/rem/a")
-        target2 = BridgeTarget("Node-B", "10.0.0.2", 22, "admin", "p2", "/rem/b")
+        target1 = BridgeTarget("Node-A", "10.0.0.1", 22, "admin", "p1", "/rem/sim_a")
+        target2 = BridgeTarget("Node-B", "10.0.0.2", 22, "admin", "p2", "/rem/sim_b")
 
         config = BridgeConfig(globals, push_opts, pull_opts, [target1, target2])
 
@@ -268,11 +348,20 @@ using TOML: TOML
         @test all(r -> r.action == :push, push_results)
         @test all(r -> occursin("Dry run:", r.message), push_results)
 
-        # Pull Dry Run
-        pull_results = pull_all_targets(config; dry_run=true)
+        # Pull Dry Run with Post-Clean
+        pull_results = pull_all_targets(config; dry_run=true, clean_remote=true)
         @test length(pull_results) == 2
         @test all(r -> r.success, pull_results)
         @test all(r -> r.action == :pull, pull_results)
         @test all(r -> occursin("Dry run:", r.message), pull_results)
+        @test all(r -> occursin("Post-clean: rm -rf", r.message), pull_results)
+
+        # Standalone Clean Dry Run
+        clean_results = clean_all_remote_targets(config; dry_run=true)
+        @test length(clean_results) == 2
+        @test all(r -> r.success, clean_results)
+        @test all(r -> r.action == :clean, clean_results)
+        @test all(r -> occursin("rm -rf -- '/rem/sim_a'", clean_results[1].message),
+                  clean_results)
     end
 end
