@@ -30,6 +30,10 @@ function build_push_command(target::BridgeTarget,
 
     push!(cmd_args, "-e", build_ssh_rsh_string(target, globals))
 
+    if push_opts.use_gitignore
+        push!(cmd_args, "--filter=:- .gitignore")
+    end
+
     for exc in push_opts.excludes
         push!(cmd_args, "--exclude=$(exc)")
     end

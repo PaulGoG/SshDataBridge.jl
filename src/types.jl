@@ -89,21 +89,29 @@ Configuration parameters governing local project deployment to remote compute no
 - `local_source_dir::String`: Path to the local project folder to deploy.
 - `excludes::Vector{String}`: Array of glob patterns excluded from deployment.
 - `require_clean_git::Bool`: If true, aborts deployment when local git working tree is dirty.
+- `use_gitignore::Bool`: If true, automatically honors .gitignore rules in the deployed project.
 """
 struct PushOptions
     local_source_dir::String
     excludes::Vector{String}
     require_clean_git::Bool
+    use_gitignore::Bool
 
     function PushOptions(local_source_dir::AbstractString,
-                         excludes::AbstractVector=String[".git", ".github", ".vscode",
-                                                         "*.swp", "*~", "data/output",
+                         excludes::AbstractVector=String[".git",
+                                                         ".github",
+                                                         ".vscode",
+                                                         "*.swp",
+                                                         "*~",
+                                                         "data/output",
                                                          "harvested_results"],
-                         require_clean_git::Bool=false)
+                         require_clean_git::Bool=false,
+                         use_gitignore::Bool=true)
         validate_push_options(local_source_dir)
         return new(String(strip(local_source_dir)),
                    String[String(strip(string(e))) for e in excludes],
-                   require_clean_git)
+                   require_clean_git,
+                   use_gitignore)
     end
 end
 

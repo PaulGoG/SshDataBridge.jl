@@ -30,6 +30,9 @@ excludes = [
     "*.jl.cov",
 ]
 
+# Automatically honor all ignore rules from the project's .gitignore file
+use_gitignore = true  # one of: true | false
+
 # Require clean git working tree before allowing push
 require_clean_git = false  # one of: true | false
 

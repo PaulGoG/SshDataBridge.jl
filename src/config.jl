@@ -24,7 +24,9 @@ function parse_config(dict::AbstractDict{String, Any};
                                 "harvested_results"])
     push_excludes = String[String(strip(string(e))) for e in push_excludes_raw]
     require_clean_git = get(push_raw, "require_clean_git", false)
-    push_opts = PushOptions(resolved_source, push_excludes, require_clean_git)
+    use_gitignore = get(push_raw, "use_gitignore", true)
+    push_opts = PushOptions(resolved_source, push_excludes, require_clean_git,
+                            use_gitignore)
 
     # 3. Parse Pull Options
     pull_raw = get(dict, "pull", Dict{String, Any}())
