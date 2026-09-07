@@ -151,19 +151,29 @@ end
                 clean_remote::Union{Bool, Nothing}=nothing)::TransferResult
 
 Harvest the remote output directory of a single target. When `clean_remote` is `true`, or
-`nothing` and `config.pull.clean_remote_after_pull` is set, the remote project directory
-is purged after a successful transfer.
+`nothing` and `config.pull.clean_remote_after_pull` is set, the directory selected by
+`config.pull.purge_scope` is purged after a successful transfer. The purge is skipped, and
+the reason reported, when `config.pull.includes` narrows the harvest, because files left
+unharvested by the filter would otherwise be destroyed.
 """
 function pull_target(target::BridgeTarget, config::BridgeConfig; dry_run::Bool=false,
                      clean_remote::Union{Bool, Nothing}=nothing)::TransferResult
     t_start = time()
     should_clean = clean_remote !== nothing ? clean_remote :
                    config.pull.clean_remote_after_pull
+    scope = config.pull.purge_scope
+    filtered = !isempty(config.pull.includes)
     local_dir = joinpath(config.pull.local_destination_root, target.name)
 
     if dry_run
         cmd = build_pull_command(target, config.globals, config.pull, local_dir)
-        clean_note = should_clean ? " [post-pull purge of '$(target.remote_dir)']" : ""
+        clean_note = if !should_clean
+            ""
+        elseif filtered
+            " [post-pull purge skipped: 'includes' filter active]"
+        else
+            " [post-pull purge of '$(purge_path(target, scope))']"
+        end
         return TransferResult(target, :pull, true, 0, 0.0,
                               "Dry run: $(command_string(cmd))$(clean_note)")
     end
@@ -191,9 +201,13 @@ function pull_target(target::BridgeTarget, config::BridgeConfig; dry_run::Bool=f
 
     message = "Harvested successfully in $(round(duration; digits=2)) s."
     if should_clean
-        clean_result = clean_remote_target(target, config.globals)
-        message *= clean_result.success ? " " * clean_result.message :
-                   " Remote purge failed: " * clean_result.message
+        if filtered
+            message *= " Remote purge skipped: an 'includes' filter is active, so unharvested files may remain."
+        else
+            clean_result = clean_remote_target(target, config.globals; scope=scope)
+            message *= clean_result.success ? " " * clean_result.message :
+                       " Remote purge failed: " * clean_result.message
+        end
     end
     return TransferResult(target, :pull, true, outcome.exitcode, duration, message)
 end

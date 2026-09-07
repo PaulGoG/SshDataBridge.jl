@@ -141,17 +141,32 @@ function ensure_remote_directory(target::BridgeTarget, globals::GlobalOptions,
 end
 
 """
-    clean_remote_target(target::BridgeTarget, globals::GlobalOptions;
-                        dry_run::Bool=false)::TransferResult
+    purge_path(target::BridgeTarget, scope::Symbol)::String
 
-Remove the project directory of `target` on the remote host with `rm -rf`. The path is
-checked with [`validate_remote_path_safety`](@ref) before any command is issued; a
-refusal is reported as a failed result.
+Remote directory removed by a purge of `target`: the output directory for
+`scope == :output`, the whole project directory for `scope == :project`.
+"""
+function purge_path(target::BridgeTarget, scope::Symbol)::String
+    if scope == :output
+        return remote_output_directory(target)
+    elseif scope == :project
+        return target.remote_dir
+    end
+    return throw(ArgumentError("Purge scope must be one of $(VALID_PURGE_SCOPES) (received: :$(scope))."))
+end
+
+"""
+    clean_remote_target(target::BridgeTarget, globals::GlobalOptions;
+                        scope::Symbol=:output, dry_run::Bool=false)::TransferResult
+
+Remove the directory selected by `scope` (see [`purge_path`](@ref)) on the remote host
+with `rm -rf`. The path is checked with [`validate_remote_path_safety`](@ref) before any
+command is issued; a refusal is reported as a failed result.
 """
 function clean_remote_target(target::BridgeTarget, globals::GlobalOptions;
-                             dry_run::Bool=false)::TransferResult
+                             scope::Symbol=:output, dry_run::Bool=false)::TransferResult
     t_start = time()
-    path = target.remote_dir
+    path = purge_path(target, scope)
     try
         validate_remote_path_safety(path, target.user)
     catch err
@@ -176,7 +191,7 @@ function clean_remote_target(target::BridgeTarget, globals::GlobalOptions;
     duration = time() - t_start
     success = outcome.exitcode == 0
     message = success ?
-              "Remote directory '$(path)' purged in $(round(duration; digits=2)) s." :
+              "Remote directory '$(path)' ($(scope) scope) purged in $(round(duration; digits=2)) s." :
               "rm exited with code $(outcome.exitcode): $(strip(outcome.stderr))"
     return TransferResult(target, :clean, success, outcome.exitcode, duration, message)
 end
@@ -184,14 +199,16 @@ end
 """
     clean_all_remote_targets(config::BridgeConfig; dry_run::Bool=false)::Vector{TransferResult}
 
-Purge the remote project directories of all configured targets concurrently.
+Purge the directory selected by `config.pull.purge_scope` on all configured targets
+concurrently.
 """
 function clean_all_remote_targets(config::BridgeConfig;
                                   dry_run::Bool=false)::Vector{TransferResult}
     dry_run || check_local_binaries()
-    @info "Dispatching parallel remote project purge" total_targets = length(config.targets) dry_run = dry_run
+    scope = config.pull.purge_scope
+    @info "Dispatching parallel remote purge" total_targets = length(config.targets) scope = scope dry_run = dry_run
     tasks = map(config.targets) do target
-        @async clean_remote_target(target, config.globals; dry_run=dry_run)
+        @async clean_remote_target(target, config.globals; scope=scope, dry_run=dry_run)
     end
     return fetch.(tasks)
 end

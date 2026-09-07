@@ -23,11 +23,12 @@ function print_usage()
              probe         Execute pre-flight connectivity, rsync, and path diagnostics
              push          Deploy local project tree to remote targets in parallel
              pull          Harvest simulation output artifacts from remote targets in parallel
-             clean         Safely purge remote project directories across targets in parallel
+             clean         Purge the remote directory selected by purge_scope on all targets
 
            Options:
              --config, -c <path>   Path to configuration TOML (default: config.toml)
-             --clean-remote        On pull: purge remote project directory upon successful harvest
+             --clean-remote        On pull: purge the remote directory after a successful harvest
+             --yes                 Confirm remote deletion (required for clean and any purge)
              --dry-run             Print constructed commands without executing transfers
              --help, -h            Show this help manual
            """)
@@ -101,6 +102,7 @@ function main(args::Vector{String}=ARGS)
     config_path = joinpath(dirname(@__DIR__), "config.toml")
     dry_run = false
     clean_remote_flag = nothing
+    confirmed = false
 
     idx = 2
     while idx <= length(args)
@@ -120,6 +122,9 @@ function main(args::Vector{String}=ARGS)
         elseif arg == "--clean-remote"
             clean_remote_flag = true
             idx += 1
+        elseif arg == "--yes"
+            confirmed = true
+            idx += 1
         else
             println(stderr, "Error: Unrecognized option '$(arg)'.")
             print_usage()
@@ -135,6 +140,15 @@ function main(args::Vector{String}=ARGS)
 
     @info "Loading SshDataBridge configuration" path=config_path action=action dry_run=dry_run
     config = load_config(config_path)
+
+    purge_requested = action == :clean ||
+                      (action == :pull &&
+                       (clean_remote_flag === true || config.pull.clean_remote_after_pull))
+    if purge_requested && !dry_run && !confirmed
+        println(stderr,
+                "Error: this invocation deletes remote directories (purge_scope = $(config.pull.purge_scope)); re-run with --yes to confirm, or use --dry-run to preview.")
+        exit(1)
+    end
 
     if action == :probe
         results = probe_all_targets(config)
