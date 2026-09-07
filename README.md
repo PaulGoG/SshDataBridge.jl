@@ -20,6 +20,10 @@ SshDataBridge/
 ├── SECURITY.md              # Threat model and vulnerability reporting
 ├── activate.jl              # Activates and instantiates the root environment
 ├── config.example.toml      # Annotated configuration template
+├── format/
+│   ├── Project.toml         # Formatting environment (JuliaFormatter 2.14+)
+│   ├── activate.jl          # Activates the formatting environment
+│   └── format.jl            # Formats the repository; --check verifies without writing
 ├── scripts/
 │   └── run.jl               # Command-line driver: probe | push | pull | clean
 ├── src/
@@ -31,7 +35,7 @@ SshDataBridge/
 │   ├── probe.jl             # ssh commands: probe, mkdir, purge
 │   └── transfer.jl          # rsync commands: push, pull; clean-tree check
 └── test/
-    ├── Project.toml         # Test environment: Aqua, JET, ExplicitImports, JuliaFormatter
+    ├── Project.toml         # Test environment: Aqua, JET, ExplicitImports
     ├── activate.jl          # Activates the test environment against the local source
     └── runtests.jl          # Static analysis, unit tests, stub-binary process tests
 ```
@@ -57,6 +61,7 @@ The driver script activates the environment itself, so no `--project` flag is ne
 
 ```bash
 julia test/activate.jl
+julia format/activate.jl   # formatting environment
 ```
 
 ## Entry points
@@ -71,7 +76,8 @@ julia scripts/run.jl pull --clean-remote --yes          # harvest, then purge th
 julia scripts/run.jl clean --yes                        # purge without harvesting
 julia scripts/run.jl clean --dry-run                    # show what a purge would remove
 julia --project=test test/runtests.jl                   # test suite
-julia --project=test -e 'using JuliaFormatter; format(".")'   # formatter
+julia format/format.jl                                  # format the sources
+julia format/format.jl --check                          # verify formatting without writing
 ```
 
 `--config <path>` selects another configuration file; the default is `config.toml` next to `Project.toml`. The exit status is 0 when every target succeeded, 2 when at least one failed, and 1 on a configuration or precondition error.

@@ -14,7 +14,7 @@ All notable changes to this project are documented in this file. The format foll
 - rsync deployment that honours the `.gitignore` of the source tree, resumable retrieval with `--partial`, and `resume`, `backup`, and `abort` strategies for existing local directories.
 - Scoped remote purge (`purge_scope = "output" | "project"`) guarded by remote-path safety rules, a `--yes` confirmation flag, and automatic refusal after harvests narrowed by include patterns.
 - Optional clean-git-tree requirement for deployments, evaluated in the configured source directory.
-- Test suite with static analysis (Aqua, JET, ExplicitImports), a formatting check, and a stub-binary harness that exercises the process execution paths without network access.
+- Test suite with static analysis (Aqua, JET, ExplicitImports) and a stub-binary harness that exercises the process execution paths without network access; formatting enforced by a dedicated `format/` environment and CI job.
 
 [Unreleased]: https://github.com/PaulGoG/SshDataBridge.jl/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/PaulGoG/SshDataBridge.jl/releases/tag/v0.1.0

@@ -19,6 +19,7 @@ harvested_results/
 *.jl.mem
 /Manifest.toml
 test/Manifest.toml
+format/Manifest.toml
 
 # System & editor artifacts
 .DS_Store
