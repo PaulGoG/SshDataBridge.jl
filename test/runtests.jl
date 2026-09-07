@@ -283,6 +283,156 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
                                                                                             "user" => "u",
                                                                                             "password" => "p",
                                                                                             "remote_dir" => "/a/b")]))
+
+        # Malformed TOML, unknown keys, wrong types, and missing mandatory keys fail fast
+        mktemp() do path, io
+            write(io, "[globals]\nconnect_timeout = [1,\n")
+            close(io)
+            @test_throws ArgumentError load_config(path)
+        end
+        @test_throws ArgumentError load_config(joinpath(@__DIR__, "does-not-exist.toml"))
+
+        minimal_target() = Dict{String, Any}("host" => "10.0.0.1", "user" => "u",
+                                             "password" => "p", "remote_dir" => "/a/b")
+        function config_error(dict)
+            return try
+                parse_config(dict)
+                nothing
+            catch err
+                err
+            end
+        end
+        function config_error_message(dict)
+            err = config_error(dict)
+            @test err isa ArgumentError
+            return err isa ArgumentError ? err.msg : ""
+        end
+
+        @test parse_config(Dict{String, Any}("targets" => Any[minimal_target()])) isa
+              BridgeConfig
+        @test occursin("'typo'",
+                       config_error_message(Dict{String, Any}("typo" => 1,
+                                                              "targets" =>
+                                                                  Any[minimal_target()])))
+        @test occursin("[pull]",
+                       config_error_message(Dict{String, Any}("pull" =>
+                                                                  Dict{String, Any}("purge_scopes" => "output"),
+                                                              "targets" =>
+                                                                  Any[minimal_target()])))
+        @test occursin("[[targets]] entry #1",
+                       config_error_message(Dict{String, Any}("targets" =>
+                                                                  Any[merge(minimal_target(),
+                                                                            Dict("hostname" => "x"))])))
+        @test occursin("must be an integer",
+                       config_error_message(Dict{String, Any}("globals" =>
+                                                                  Dict{String, Any}("connect_timeout" => "10"),
+                                                              "targets" =>
+                                                                  Any[minimal_target()])))
+        @test occursin("must be an integer",
+                       config_error_message(Dict{String, Any}("targets" =>
+                                                                  Any[merge(minimal_target(),
+                                                                            Dict("port" =>
+                                                                                     true))])))
+        @test occursin("must be a boolean",
+                       config_error_message(Dict{String, Any}("globals" =>
+                                                                  Dict{String, Any}("compress" =>
+                                                                                        1),
+                                                              "targets" =>
+                                                                  Any[minimal_target()])))
+        @test occursin("must be a string",
+                       config_error_message(Dict{String, Any}("pull" =>
+                                                                  Dict{String, Any}("purge_scope" =>
+                                                                                        3),
+                                                              "targets" =>
+                                                                  Any[minimal_target()])))
+        @test occursin("array of strings",
+                       config_error_message(Dict{String, Any}("push" =>
+                                                                  Dict{String, Any}("excludes" => "x"),
+                                                              "targets" =>
+                                                                  Any[minimal_target()])))
+        @test occursin("Entry #2",
+                       config_error_message(Dict{String, Any}("push" =>
+                                                                  Dict{String, Any}("excludes" =>
+                                                                                        Any["a",
+                                                                                            2]),
+                                                              "targets" =>
+                                                                  Any[minimal_target()])))
+        @test occursin("must be a table",
+                       config_error_message(Dict{String, Any}("globals" => 5,
+                                                              "targets" =>
+                                                                  Any[minimal_target()])))
+        @test occursin("array of tables",
+                       config_error_message(Dict{String, Any}("targets" => "x")))
+        @test occursin("entry #1 must be a table",
+                       config_error_message(Dict{String, Any}("targets" => Any[1])))
+        for mandatory in ("host", "user", "password", "remote_dir")
+            incomplete = minimal_target()
+            delete!(incomplete, mandatory)
+            message = config_error_message(Dict{String, Any}("targets" => Any[incomplete]))
+            @test occursin("'[[targets]] entry #1.$(mandatory)' is mandatory", message)
+        end
+
+        # Relative local paths resolve against the configuration directory; ~ expands
+        resolved = parse_config(Dict{String, Any}("push" =>
+                                                      Dict{String, Any}("local_source_dir" => "src"),
+                                                  "pull" =>
+                                                      Dict{String, Any}("local_destination_root" => "~/harvest"),
+                                                  "targets" => Any[minimal_target()]);
+                                config_dir="/cfg/dir")
+        @test resolved.push.local_source_dir == "/cfg/dir/src"
+        @test resolved.pull.local_destination_root == joinpath(homedir(), "harvest")
+        @test resolved.targets[1].name == "Target-1"
+        @test resolved.targets[1].port == 22
+    end
+
+    @testset "Git Working Tree Requirement" begin
+        mktempdir() do no_git
+            withenv("PATH" => no_git) do
+                @test_throws MissingBinaryError assert_clean_git_tree(no_git)
+            end
+        end
+
+        if Sys.which("git") === nothing
+            @warn "git is not available; skipping working-tree checks"
+        else
+            mktempdir() do plain
+                @test_throws ArgumentError assert_clean_git_tree(plain)
+                @test_throws ArgumentError assert_clean_git_tree(joinpath(plain, "missing"))
+            end
+
+            mktempdir() do repo
+                run(pipeline(`git -C $repo init -q`; stdout=devnull, stderr=devnull))
+                @test assert_clean_git_tree(repo) === nothing
+
+                write(joinpath(repo, "untracked.txt"), "x")
+                dirty_error = try
+                    assert_clean_git_tree(repo)
+                    nothing
+                catch err
+                    err
+                end
+                @test dirty_error isa DirtyWorkingTreeError
+                @test any(occursin("untracked.txt", e) for e in dirty_error.entries)
+                @test occursin("untracked.txt", sprint(showerror, dirty_error))
+
+                globals = GlobalOptions()
+                target = BridgeTarget("Node-A", "10.0.0.1", 22, "admin", "pw", "/rem/sim")
+                pull_opts = PullOptions("/local/dst")
+                dirty_config = BridgeConfig(globals, PushOptions(repo, String[], true),
+                                            pull_opts, [target])
+                @test_throws DirtyWorkingTreeError push_all_targets(dirty_config;
+                                                                    dry_run=true)
+
+                rm(joinpath(repo, "untracked.txt"))
+                clean_results = push_all_targets(dirty_config; dry_run=true)
+                @test only(clean_results).success
+
+                relaxed_config = BridgeConfig(globals, PushOptions(repo, String[], false),
+                                              pull_opts, [target])
+                write(joinpath(repo, "untracked.txt"), "x")
+                @test only(push_all_targets(relaxed_config; dry_run=true)).success
+            end
+        end
     end
 
     @testset "Command Construction & Collision Strategies" begin
