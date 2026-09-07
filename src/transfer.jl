@@ -213,13 +213,42 @@ function pull_target(target::BridgeTarget, config::BridgeConfig; dry_run::Bool=f
 end
 
 """
+    assert_clean_git_tree(dir::AbstractString)
+
+Throw [`MissingBinaryError`](@ref) when `git` is unavailable, `ArgumentError` when `dir`
+does not exist or is not inside a git working tree, and [`DirtyWorkingTreeError`](@ref)
+when the tree has uncommitted changes, untracked files included. Returns `nothing` for a
+clean tree.
+"""
+function assert_clean_git_tree(dir::AbstractString)
+    git = Sys.which("git")
+    git === nothing && throw(MissingBinaryError(["git"]))
+    isdir(dir) || throw(ArgumentError("Directory '$(dir)' does not exist."))
+    inside = run_captured(`$git -C $dir rev-parse --is-inside-work-tree`)
+    if inside.exitcode != 0 || strip(inside.stdout) != "true"
+        throw(ArgumentError("Directory '$(dir)' is not inside a git working tree: $(strip(inside.stderr))"))
+    end
+    status = run_captured(`$git -C $dir status --porcelain`)
+    if status.exitcode != 0
+        throw(ArgumentError("git status failed in '$(dir)': $(strip(status.stderr))"))
+    end
+    entries = String[String(line)
+                     for line in eachline(IOBuffer(status.stdout)) if !isempty(line)]
+    isempty(entries) || throw(DirtyWorkingTreeError(String(dir), entries))
+    return nothing
+end
+
+"""
     push_all_targets(config::BridgeConfig; dry_run::Bool=false)::Vector{TransferResult}
 
-Deploy the local source tree to all configured targets concurrently.
+Deploy the local source tree to all configured targets concurrently. When
+`config.push.require_clean_git` is set, the source tree must be a clean git working tree;
+the check also runs in dry-run mode.
 """
 function push_all_targets(config::BridgeConfig;
                           dry_run::Bool=false)::Vector{TransferResult}
     dry_run || check_local_binaries()
+    config.push.require_clean_git && assert_clean_git_tree(config.push.local_source_dir)
     @info "Dispatching parallel push deployment" total_targets = length(config.targets) source = config.push.local_source_dir dry_run = dry_run
     tasks = map(config.targets) do target
         @async push_target(target, config; dry_run=dry_run)

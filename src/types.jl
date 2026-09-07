@@ -18,6 +18,26 @@ function Base.showerror(io::IO, err::MissingBinaryError)
 end
 
 """
+    DirtyWorkingTreeError(directory::String, entries::Vector{String})
+
+Raised when `require_clean_git` is enabled and the git working tree at `directory` has
+uncommitted changes; `entries` holds the `git status --porcelain` lines.
+"""
+struct DirtyWorkingTreeError <: Exception
+    directory::String
+    entries::Vector{String}
+end
+
+function Base.showerror(io::IO, err::DirtyWorkingTreeError)
+    print(io, "Git working tree at '", err.directory, "' has ", length(err.entries),
+          " uncommitted change(s) and require_clean_git is enabled:")
+    for entry in err.entries
+        print(io, "\n  ", entry)
+    end
+    return nothing
+end
+
+"""
     BridgeTarget
 
 Immutable description of a remote computing node and its campaign directory layout.
