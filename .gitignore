@@ -18,6 +18,7 @@ harvested_results/
 *.jl.*.cov
 *.jl.mem
 /Manifest.toml
+test/Manifest.toml
 
 # System & editor artifacts
 .DS_Store
