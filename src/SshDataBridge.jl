@@ -4,6 +4,7 @@ using TOML: TOML
 
 include("validation.jl")
 include("types.jl")
+include("process.jl")
 include("config.jl")
 include("probe.jl")
 include("transfer.jl")
@@ -22,6 +23,8 @@ export BridgeTarget,
        validate_push_options,
        validate_pull_options,
        validate_remote_path_safety,
+       run_authenticated,
+       command_string,
        check_local_binaries,
        probe_target,
        probe_all_targets,

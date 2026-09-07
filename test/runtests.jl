@@ -6,6 +6,54 @@ using ExplicitImports
 using JuliaFormatter
 using TOML: TOML
 
+const STUB_SCRIPT = raw"""
+#!/bin/sh
+if [ "$3" = "rsync" ]; then
+    code="${STUB_RSYNC_EXIT_CODE:-${STUB_EXIT_CODE:-0}}"
+else
+    code="${STUB_EXIT_CODE:-0}"
+fi
+if [ -n "${STUB_ARGS_FILE:-}" ]; then
+    printf '%s\n' "$*" >> "$STUB_ARGS_FILE"
+fi
+printf '%s\n' "${STUB_STDOUT:-}"
+printf '%s\n' "${STUB_STDERR:-stub stderr}" >&2
+exit "$code"
+"""
+
+"""
+    with_stub_binaries(f; exit_code, rsync_exit_code, stdout_text, stderr_text)
+
+Run `f(args_file)` with stub `sshpass`, `ssh`, and `rsync` executables placed first on
+`PATH`. The stubs print `stdout_text` and `stderr_text`, append their argument vector to
+`args_file`, and exit with `exit_code` (or `rsync_exit_code` when the third argument is
+`rsync`, i.e. for transfer commands).
+"""
+function with_stub_binaries(f; exit_code::Integer=0,
+                            rsync_exit_code::Union{Nothing, Integer}=nothing,
+                            stdout_text::AbstractString="",
+                            stderr_text::AbstractString="stub stderr")
+    return mktempdir() do stubdir
+        for name in ("sshpass", "ssh", "rsync")
+            path = joinpath(stubdir, name)
+            write(path, STUB_SCRIPT)
+            chmod(path, 0o700)
+        end
+        args_file = joinpath(stubdir, "invocations.log")
+        rsync_code = rsync_exit_code === nothing ? exit_code : rsync_exit_code
+        withenv("PATH" => stubdir * ":" * get(ENV, "PATH", ""),
+                "STUB_EXIT_CODE" => string(exit_code),
+                "STUB_RSYNC_EXIT_CODE" => string(rsync_code),
+                "STUB_STDOUT" => stdout_text,
+                "STUB_STDERR" => stderr_text,
+                "STUB_ARGS_FILE" => args_file) do
+            return f(args_file)
+        end
+    end
+end
+
+recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : String[]
+
 @testset "SshDataBridge.jl" begin
     @testset "Static Code Quality Analysis (QA)" begin
         @testset "Aqua.jl" begin
@@ -27,15 +75,8 @@ using TOML: TOML
     end
 
     @testset "Field Validation & Boundary Handling" begin
-        # Valid Target
-        t = BridgeTarget("Node-01",
-                         "192.168.1.50",
-                         22,
-                         "admin",
-                         "secret",
-                         "/opt/sims",
-                         "results",
-                         "accept-new")
+        t = BridgeTarget("Node-01", "192.168.1.50", 22, "admin", "secret", "/opt/sims",
+                         "results", "accept-new")
         @test t.name == "Node-01"
         @test t.host == "192.168.1.50"
         @test t.port == 22
@@ -45,89 +86,41 @@ using TOML: TOML
         @test t.output_subdir == "results"
         @test t.strict_host_key_checking == "accept-new"
 
-        # Default output_subdir
         t_default = BridgeTarget("Node-02", "10.0.0.1", 2222, "root", "toor", "/tmp/sim")
         @test t_default.output_subdir == "output"
         @test t_default.strict_host_key_checking === nothing
 
-        # Target Validation Failures
-        @test_throws ArgumentError BridgeTarget("",
-                                                "192.168.1.50",
-                                                22,
-                                                "admin",
-                                                "pass",
+        @test_throws ArgumentError BridgeTarget("", "192.168.1.50", 22, "admin", "pass",
                                                 "/dir")
         @test_throws ArgumentError BridgeTarget("N1", "", 22, "admin", "pass", "/dir")
-        @test_throws ArgumentError BridgeTarget("N1",
-                                                "192.168.1.1 0",
-                                                22,
-                                                "admin",
-                                                "pass",
+        @test_throws ArgumentError BridgeTarget("N1", "192.168.1.1 0", 22, "admin", "pass",
                                                 "/dir")
-        @test_throws ArgumentError BridgeTarget("N1",
-                                                "192.168.1.50",
-                                                0,
-                                                "admin",
-                                                "pass",
+        @test_throws ArgumentError BridgeTarget("N1", "192.168.1.50", 0, "admin", "pass",
                                                 "/dir")
-        @test_throws ArgumentError BridgeTarget("N1",
-                                                "192.168.1.50",
-                                                70000,
-                                                "admin",
-                                                "pass",
+        @test_throws ArgumentError BridgeTarget("N1", "192.168.1.50", 70000, "admin",
+                                                "pass", "/dir")
+        @test_throws ArgumentError BridgeTarget("N1", "192.168.1.50", 22, "", "pass",
                                                 "/dir")
-        @test_throws ArgumentError BridgeTarget("N1",
-                                                "192.168.1.50",
-                                                22,
-                                                "",
-                                                "pass",
+        @test_throws ArgumentError BridgeTarget("N1", "192.168.1.50", 22, "admin user",
+                                                "pass", "/dir")
+        @test_throws ArgumentError BridgeTarget("N1", "192.168.1.50", 22, "admin", "",
                                                 "/dir")
-        @test_throws ArgumentError BridgeTarget("N1",
-                                                "192.168.1.50",
-                                                22,
-                                                "admin user",
-                                                "pass",
-                                                "/dir")
-        @test_throws ArgumentError BridgeTarget("N1",
-                                                "192.168.1.50",
-                                                22,
-                                                "admin",
-                                                "",
-                                                "/dir")
-        @test_throws ArgumentError BridgeTarget("N1",
-                                                "192.168.1.50",
-                                                22,
-                                                "admin",
-                                                "pass",
+        @test_throws ArgumentError BridgeTarget("N1", "192.168.1.50", 22, "admin", "pass",
                                                 "")
-        @test_throws ArgumentError BridgeTarget("N1",
-                                                "192.168.1.50",
-                                                22,
-                                                "admin",
-                                                "pass",
-                                                "/dir",
-                                                "")
-        @test_throws ArgumentError BridgeTarget("N1",
-                                                "192.168.1.50",
-                                                22,
-                                                "admin",
-                                                "pass",
-                                                "/dir",
-                                                "out",
-                                                "invalid_policy")
+        @test_throws ArgumentError BridgeTarget("N1", "192.168.1.50", 22, "admin", "pass",
+                                                "/dir", "")
+        @test_throws ArgumentError BridgeTarget("N1", "192.168.1.50", 22, "admin", "pass",
+                                                "/dir", "out", "invalid_policy")
 
-        # Global Options Validation
         g_valid = GlobalOptions(15, "yes", true, 5000)
         @test g_valid.connect_timeout == 15
         @test g_valid.strict_host_key_checking == "yes"
         @test g_valid.compress == true
         @test g_valid.bandwidth_limit == 5000
-
         @test_throws ArgumentError GlobalOptions(0, "accept-new", true, 0)
         @test_throws ArgumentError GlobalOptions(10, "invalid_policy", true, 0)
         @test_throws ArgumentError GlobalOptions(10, "accept-new", true, -10)
 
-        # Push Options Validation
         p_valid = PushOptions("/local/src", ["*.tmp"], true, true)
         @test p_valid.local_source_dir == "/local/src"
         @test p_valid.excludes == ["*.tmp"]
@@ -135,31 +128,21 @@ using TOML: TOML
         @test p_valid.use_gitignore == true
         @test_throws ArgumentError PushOptions("")
 
-        # Pull Options Validation
-        pull_valid = PullOptions("/local/dest",
-                                 "output_dir",
-                                 ["*.csv"],
-                                 ["*.tmp"],
-                                 :backup,
-                                 true)
+        pull_valid = PullOptions("/local/dest", "output_dir", ["*.csv"], ["*.tmp"],
+                                 :backup, true)
         @test pull_valid.local_destination_root == "/local/dest"
         @test pull_valid.output_subdir == "output_dir"
         @test pull_valid.includes == ["*.csv"]
         @test pull_valid.excludes == ["*.tmp"]
         @test pull_valid.collision_strategy == :backup
         @test pull_valid.clean_remote_after_pull == true
-
         @test_throws ArgumentError PullOptions("")
         @test_throws ArgumentError PullOptions("/local/dest", "")
-        @test_throws ArgumentError PullOptions("/local/dest",
-                                               "output",
-                                               String[],
-                                               String[],
-                                               :invalid_strategy)
+        @test_throws ArgumentError PullOptions("/local/dest", "output", String[],
+                                               String[], :invalid_strategy)
 
-        # Remote Path Safety Validation
         @test validate_remote_path_safety("/home/user/campaigns/sim01", "user") === nothing
-        @test validate_remote_path_safety("/scratch/paulgog/batch1", "paulgog") === nothing
+        @test validate_remote_path_safety("/scratch/worker/batch1", "worker") === nothing
         @test_throws ArgumentError validate_remote_path_safety("", "user")
         @test_throws ArgumentError validate_remote_path_safety("/", "user")
         @test_throws ArgumentError validate_remote_path_safety("/root", "user")
@@ -232,7 +215,6 @@ using TOML: TOML
             @test config.pull.clean_remote_after_pull == true
 
             @test length(config.targets) == 2
-
             t1 = config.targets[1]
             @test t1.name == "GPU-Worker-1"
             @test t1.host == "worker01.cluster.local"
@@ -247,13 +229,15 @@ using TOML: TOML
             @test t2.name == "GPU-Worker-2"
             @test t2.host == "worker02.cluster.local"
             @test t2.port == 2202
-            @test t2.output_subdir == "results"  # Inherited from [pull].output_subdir
+            @test t2.output_subdir == "results"
             @test t2.strict_host_key_checking == "accept-new"
+
+            # Credentials never appear in the printed representation of the configuration
+            @test !occursin("secret_pass", repr(config))
+            @test !occursin("secret_pass", sprint(show, MIME("text/plain"), config))
         end
 
-        # Missing target array
         @test_throws ArgumentError parse_config(Dict{String, Any}("globals" => Dict()))
-        # Empty target array
         @test_throws ArgumentError parse_config(Dict{String, Any}("targets" => Any[]))
     end
 
@@ -262,24 +246,12 @@ using TOML: TOML
         push_opts = PushOptions("/local/workspace", [".git", "*.tmp"], false)
         pull_opts_resume = PullOptions("/local/harvest", "output", ["*.csv"], ["*.tmp"],
                                        :resume, false)
-        pull_opts_backup = PullOptions("/local/harvest", "output", ["*.csv"], ["*.tmp"],
-                                       :backup, true)
-        pull_opts_abort = PullOptions("/local/harvest", "output", ["*.csv"], ["*.tmp"],
-                                      :abort, false)
+        target = BridgeTarget("RTX-Node", "10.0.0.5", 2222, "worker", "p@ssword#1",
+                              "/srv/sim_01", "results")
 
-        target = BridgeTarget("RTX-Node",
-                              "10.0.0.5",
-                              2222,
-                              "paulgog",
-                              "p@ssword#1",
-                              "/srv/sim_01",
-                              "results")
-
-        # Push Command Construction
         push_cmd = build_push_command(target, globals, push_opts)
-        @test push_cmd.exec[1] == "sshpass"
-        @test push_cmd.exec[2] == "-e"
-        @test push_cmd.exec[3] == "rsync"
+        @test push_cmd.exec[1:4] == ["sshpass", "-d", "0", "rsync"]
+        @test push_cmd.env === nothing
         @test "-av" in push_cmd.exec
         @test "--partial" in push_cmd.exec
         @test "-z" in push_cmd.exec
@@ -291,22 +263,36 @@ using TOML: TOML
         @test any(occursin("ssh -p 2222", arg) for arg in push_cmd.exec)
         @test any(occursin("StrictHostKeyChecking=accept-new", arg)
                   for arg in push_cmd.exec)
-        @test any(endswith(arg, "/srv/sim_01/") for arg in push_cmd.exec)
-        @test push_cmd.env !== nothing
-        @test any(startswith(e, "SSHPASS=") for e in push_cmd.env)
+        @test any(occursin("NumberOfPasswordPrompts=1", arg) for arg in push_cmd.exec)
+        @test push_cmd.exec[end - 1] == "/local/workspace/"
+        @test push_cmd.exec[end] == "worker@10.0.0.5:/srv/sim_01/"
 
-        # Pull Command Construction
         pull_cmd = build_pull_command(target, globals, pull_opts_resume,
                                       "/local/harvest/RTX-Node")
-        @test pull_cmd.exec[1] == "sshpass"
-        @test pull_cmd.exec[2] == "-e"
-        @test pull_cmd.exec[3] == "rsync"
+        @test pull_cmd.exec[1:4] == ["sshpass", "-d", "0", "rsync"]
+        @test pull_cmd.env === nothing
         @test "--include=*.csv" in pull_cmd.exec
         @test "--exclude=*.tmp" in pull_cmd.exec
-        @test any(occursin("/srv/sim_01/results/", arg) for arg in pull_cmd.exec)
-        @test any(occursin("/local/harvest/RTX-Node/", arg) for arg in pull_cmd.exec)
+        @test pull_cmd.exec[end - 1] == "worker@10.0.0.5:/srv/sim_01/results/"
+        @test pull_cmd.exec[end] == "/local/harvest/RTX-Node/"
 
-        # Collision Strategy Preparation
+        # IPv6 literals are bracketed for rsync endpoints only
+        ipv6_target = BridgeTarget("V6", "2001:db8::10", 22, "worker", "pw", "/srv/sim")
+        ipv6_push = build_push_command(ipv6_target, globals, push_opts)
+        @test ipv6_push.exec[end] == "worker@[2001:db8::10]:/srv/sim/"
+        @test SshDataBridge.build_ssh_command(ipv6_target, globals, "true").exec[end - 1] ==
+              "worker@2001:db8::10"
+
+        # Remote commands are POSIX-quoted and use ssh -n with a single password prompt
+        spaced = BridgeTarget("Spaced", "10.0.0.9", 22, "worker", "pw", "/srv/sim a",
+                              "out b")
+        probe_cmd = SshDataBridge.build_ssh_command(spaced, globals,
+                                                    SshDataBridge.build_probe_script(spaced))
+        @test probe_cmd.exec[1:5] == ["sshpass", "-d", "0", "ssh", "-n"]
+        @test "NumberOfPasswordPrompts=1" in probe_cmd.exec
+        @test occursin("test -d '/srv/sim a'", probe_cmd.exec[end])
+        @test occursin("test -d '/srv/sim a/out b'", probe_cmd.exec[end])
+
         mktempdir() do tmpdir
             pull_test_opts = PullOptions(tmpdir, "output", String[], String[], :resume,
                                          false)
@@ -314,15 +300,11 @@ using TOML: TOML
             @test isdir(dest_dir)
             @test dest_dir == joinpath(tmpdir, "RTX-Node")
 
-            # Write a marker file
             marker = joinpath(dest_dir, "test.txt")
             write(marker, "data")
-
-            # Resume preserves directory
-            dest_dir2 = prepare_local_pull_directory(target, pull_test_opts)
+            prepare_local_pull_directory(target, pull_test_opts)
             @test isfile(marker)
 
-            # Backup renames existing directory
             pull_backup_opts = PullOptions(tmpdir, "output", String[], String[], :backup,
                                            false)
             dest_dir3 = prepare_local_pull_directory(target, pull_backup_opts)
@@ -330,7 +312,6 @@ using TOML: TOML
             @test isdir("$(dest_dir3)#1")
             @test isfile(joinpath("$(dest_dir3)#1", "test.txt"))
 
-            # Abort throws exception
             pull_abort_opts = PullOptions(tmpdir, "output", String[], String[], :abort,
                                           false)
             @test_throws ErrorException prepare_local_pull_directory(target,
@@ -338,37 +319,190 @@ using TOML: TOML
         end
     end
 
-    @testset "Dry-Run Dispatch & Cleanup Execution" begin
+    @testset "Credential Handling & Redaction" begin
+        password = "s3cret-p@ss'word"
+        target = BridgeTarget("Node-A", "10.0.0.1", 22, "admin", password, "/rem/sim_a")
+
+        # The password travels through standard input and is read by the child
+        echo = run_authenticated(`sh -c 'read -r x; printf "got:%s\n" "$x"'`, password)
+        @test echo.exitcode == 0
+        @test echo.stdout == "got:$(password)\n"
+
+        # A child exiting before reading the password is reported, not thrown
+        fast = run_authenticated(`sh -c 'echo err >&2; exit 3'`, password)
+        @test fast.exitcode == 3
+        @test fast.stderr == "err\n"
+
+        # A missing executable propagates as an IOError
+        @test_throws Base.IOError run_authenticated(`definitely-missing-binary-xyz`,
+                                                    password)
+
+        # command_string never renders the environment
+        secret_cmd = setenv(`echo hello`, "SSHPASS" => password)
+        @test command_string(secret_cmd) == "echo hello"
+        @test !occursin(password, command_string(secret_cmd))
+        @test command_string(`rm -rf -- "/a b"`) == "rm -rf -- '/a b'"
+
+        # Printed representations of targets and results are redacted
+        @test sprint(show, target) ==
+              "BridgeTarget(\"Node-A\", admin@10.0.0.1:22, remote_dir = \"/rem/sim_a\", output_subdir = \"output\", password = <redacted>)"
+        @test !occursin(password, repr(target))
+        @test !occursin(password, sprint(show, MIME("text/plain"), target))
+        probe = ProbeResult(target, true, true, true, true, true, "ok")
+        @test !occursin(password, sprint(show, probe))
+        transfer = TransferResult(target, :push, true, 0, 1.0, "ok")
+        @test !occursin(password, sprint(show, transfer))
+        @test !occursin(password, repr([transfer]))
+    end
+
+    @testset "Process Execution (stub binaries)" begin
+        globals = GlobalOptions(10, "accept-new", false, 0)
+        push_opts = PushOptions("/local/src", String[".git"], false)
+        target = BridgeTarget("Node-A", "10.0.0.1", 22, "admin", "pw-A", "/rem/sim a")
+
+        with_stub_binaries(; stdout_text="RSYNC_OK\nDIR_EXISTS\nOUT_MISSING") do args_file
+            result = probe_target(target, globals)
+            @test result.ssh_ok
+            @test result.rsync_ok
+            @test result.remote_dir_exists
+            @test !result.remote_output_dir_exists
+            @test result.success
+            @test occursin("remote output dir missing", result.message)
+            invocation = only(recorded_invocations(args_file))
+            @test occursin("test -d '/rem/sim a'", invocation)
+            @test occursin("-n -p 22", invocation)
+        end
+
+        with_stub_binaries(; exit_code=255, stderr_text="Connection refused") do _
+            result = probe_target(target, globals)
+            @test !result.ssh_ok
+            @test !result.success
+            @test occursin("255", result.message)
+            @test occursin("Connection refused", result.message)
+        end
+
+        with_stub_binaries() do args_file
+            directory = ensure_remote_directory(target, globals, "/rem/sim a")
+            @test directory.success
+            @test directory.exitcode == 0
+            @test occursin("mkdir -p -- '/rem/sim a'",
+                           only(recorded_invocations(args_file)))
+        end
+
+        with_stub_binaries(; exit_code=1, stderr_text="mkdir: permission denied") do _
+            directory = ensure_remote_directory(target, globals, "/rem/sim a")
+            @test !directory.success
+            @test directory.exitcode == 1
+            @test occursin("permission denied", directory.stderr)
+        end
+
+        mktempdir() do harvest_root
+            pull_opts = PullOptions(harvest_root, "output", String[], String[], :resume,
+                                    false)
+            config = BridgeConfig(globals, push_opts, pull_opts, [target])
+
+            # rsync exit code propagates while the preceding mkdir succeeds
+            with_stub_binaries(; rsync_exit_code=23, stderr_text="partial transfer") do _
+                result = push_target(target, config)
+                @test !result.success
+                @test result.exit_code == 23
+                @test occursin("rsync exited with code 23", result.message)
+                @test occursin("partial transfer", result.message)
+            end
+
+            # A failing remote mkdir stops the push before rsync runs
+            with_stub_binaries(; exit_code=1, rsync_exit_code=0,
+                               stderr_text="mkdir failed") do args_file
+                result = push_target(target, config)
+                @test !result.success
+                @test result.exit_code == 1
+                @test occursin("Remote directory creation failed", result.message)
+                @test length(recorded_invocations(args_file)) == 1
+            end
+
+            with_stub_binaries() do _
+                results = push_all_targets(config)
+                @test length(results) == 1
+                @test results[1].success
+                @test results[1].exit_code == 0
+            end
+
+            with_stub_binaries(; exit_code=255, stderr_text="timed out") do _
+                result = pull_target(target, config)
+                @test !result.success
+                @test result.exit_code == 255
+                @test occursin("timed out", result.message)
+                @test isdir(joinpath(harvest_root, "Node-A"))
+            end
+
+            with_stub_binaries() do args_file
+                result = pull_target(target, config; clean_remote=true)
+                @test result.success
+                @test occursin("Harvested successfully", result.message)
+                @test occursin("purged", result.message)
+                invocations = recorded_invocations(args_file)
+                @test length(invocations) == 2
+                @test occursin("rm -rf -- '/rem/sim a'", invocations[2])
+            end
+
+            with_stub_binaries(; exit_code=1, stderr_text="rm: cannot remove") do _
+                result = clean_remote_target(target, globals)
+                @test !result.success
+                @test result.exit_code == 1
+                @test occursin("rm: cannot remove", result.message)
+            end
+
+            with_stub_binaries() do _
+                results = pull_all_targets(config)
+                @test length(results) == 1
+                @test results[1].success
+            end
+        end
+
+        # No password may reach any stub through the environment or the arguments
+        with_stub_binaries() do args_file
+            probe_target(target, globals)
+            @test !occursin("pw-A", read(args_file, String))
+        end
+
+        mktempdir() do empty_dir
+            withenv("PATH" => empty_dir) do
+                @test_throws ErrorException check_local_binaries()
+            end
+        end
+    end
+
+    @testset "Dry-Run Dispatch" begin
         globals = GlobalOptions(10, "accept-new", true, 0)
         push_opts = PushOptions("/local/src", String[".git"], false)
         pull_opts = PullOptions("/local/dst", "output", String[], String[], :resume, true)
-
-        target1 = BridgeTarget("Node-A", "10.0.0.1", 22, "admin", "p1", "/rem/sim_a")
-        target2 = BridgeTarget("Node-B", "10.0.0.2", 22, "admin", "p2", "/rem/sim_b")
-
+        target1 = BridgeTarget("Node-A", "10.0.0.1", 22, "admin", "p1-secret", "/rem/sim_a")
+        target2 = BridgeTarget("Node-B", "10.0.0.2", 22, "admin", "p2-secret", "/rem/sim_b")
         config = BridgeConfig(globals, push_opts, pull_opts, [target1, target2])
 
-        # Push Dry Run
         push_results = push_all_targets(config; dry_run=true)
         @test length(push_results) == 2
         @test all(r -> r.success, push_results)
         @test all(r -> r.action == :push, push_results)
-        @test all(r -> occursin("Dry run:", r.message), push_results)
+        @test all(r -> occursin("Dry run: sshpass -d 0 rsync", r.message), push_results)
 
-        # Pull Dry Run with Post-Clean
         pull_results = pull_all_targets(config; dry_run=true, clean_remote=true)
         @test length(pull_results) == 2
         @test all(r -> r.success, pull_results)
         @test all(r -> r.action == :pull, pull_results)
-        @test all(r -> occursin("Dry run:", r.message), pull_results)
-        @test all(r -> occursin("Post-clean: rm -rf", r.message), pull_results)
+        @test all(r -> occursin("Dry run: sshpass -d 0 rsync", r.message), pull_results)
+        @test all(r -> occursin("post-pull purge of '/rem/sim_", r.message), pull_results)
 
-        # Standalone Clean Dry Run
         clean_results = clean_all_remote_targets(config; dry_run=true)
         @test length(clean_results) == 2
         @test all(r -> r.success, clean_results)
         @test all(r -> r.action == :clean, clean_results)
-        @test all(r -> occursin("rm -rf -- '/rem/sim_a'", clean_results[1].message),
-                  clean_results)
+        @test occursin("rm -rf -- /rem/sim_a", clean_results[1].message)
+        @test occursin("ssh -n -p 22", clean_results[1].message)
+
+        for result in vcat(push_results, pull_results, clean_results)
+            @test !occursin("secret", result.message)
+            @test !occursin("secret", sprint(show, result))
+        end
     end
 end

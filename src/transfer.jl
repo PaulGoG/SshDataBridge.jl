@@ -1,250 +1,212 @@
 """
     build_ssh_rsh_string(target::BridgeTarget, globals::GlobalOptions)::String
 
-Construct the `-e` argument for rsync defining the OpenSSH transport parameters.
+Construct the remote-shell string passed to `rsync -e`.
 """
 function build_ssh_rsh_string(target::BridgeTarget, globals::GlobalOptions)::String
     policy = resolve_target_policy(target, globals)
-    return "ssh -p $(target.port) -o StrictHostKeyChecking=$(policy) -o ConnectTimeout=$(globals.connect_timeout)"
+    return "ssh -p $(target.port) -o StrictHostKeyChecking=$(policy) " *
+           "-o ConnectTimeout=$(globals.connect_timeout) -o NumberOfPasswordPrompts=1"
 end
 
 """
-    build_push_command(
-        target::BridgeTarget,
-        globals::GlobalOptions,
-        push_opts::PushOptions,
-    )::Cmd
+    rsync_host(host::AbstractString)::String
 
-Construct the `rsync` invocation command to deploy local code to a remote target.
+Return `host` in the form accepted by `rsync` endpoints: IPv6 literals are wrapped in
+square brackets, everything else is returned unchanged.
 """
-function build_push_command(target::BridgeTarget,
-                            globals::GlobalOptions,
+function rsync_host(host::AbstractString)::String
+    return occursin(':', host) && !startswith(host, '[') ? "[" * host * "]" : String(host)
+end
+
+"""
+    rsync_base_arguments(globals::GlobalOptions)::Vector{String}
+
+Leading arguments shared by push and pull invocations: the `sshpass` prefix, the archive
+and resumption flags, and the optional compression and bandwidth settings.
+"""
+function rsync_base_arguments(globals::GlobalOptions)::Vector{String}
+    args = String["sshpass", "-d", "0", "rsync", "-av", "--partial"]
+    globals.compress && push!(args, "-z")
+    globals.bandwidth_limit > 0 && push!(args, "--bwlimit=$(globals.bandwidth_limit)")
+    return args
+end
+
+"""
+    build_push_command(target::BridgeTarget, globals::GlobalOptions,
+                       push_opts::PushOptions)::Cmd
+
+Construct the `rsync` invocation that deploys the local source tree to `target`. The
+password is not part of the command; [`run_authenticated`](@ref) supplies it.
+"""
+function build_push_command(target::BridgeTarget, globals::GlobalOptions,
                             push_opts::PushOptions)::Cmd
-    cmd_args = String["sshpass", "-e", "rsync", "-av", "--partial"]
-    if globals.compress
-        push!(cmd_args, "-z")
+    args = rsync_base_arguments(globals)
+    push!(args, "-e", build_ssh_rsh_string(target, globals))
+    push_opts.use_gitignore && push!(args, "--filter=:- .gitignore")
+    for pattern in push_opts.excludes
+        push!(args, "--exclude=$(pattern)")
     end
-    if globals.bandwidth_limit > 0
-        push!(cmd_args, "--bwlimit=$(globals.bandwidth_limit)")
-    end
-
-    push!(cmd_args, "-e", build_ssh_rsh_string(target, globals))
-
-    if push_opts.use_gitignore
-        push!(cmd_args, "--filter=:- .gitignore")
-    end
-
-    for exc in push_opts.excludes
-        push!(cmd_args, "--exclude=$(exc)")
-    end
-
-    src = endswith(push_opts.local_source_dir, "/") ? push_opts.local_source_dir :
-          "$(push_opts.local_source_dir)/"
-    dst = "$(target.user)@$(target.host):$(target.remote_dir)/"
-    push!(cmd_args, src, dst)
-
-    base_cmd = Cmd(cmd_args)
-    return setenv(base_cmd, merge(copy(ENV), Dict("SSHPASS" => target.password)))
+    source = endswith(push_opts.local_source_dir, '/') ? push_opts.local_source_dir :
+             push_opts.local_source_dir * "/"
+    destination = "$(target.user)@$(rsync_host(target.host)):$(target.remote_dir)/"
+    push!(args, source, destination)
+    return Cmd(args)
 end
 
 """
-    build_pull_command(
-        target::BridgeTarget,
-        globals::GlobalOptions,
-        pull_opts::PullOptions,
-        local_target_dir::AbstractString,
-    )::Cmd
+    build_pull_command(target::BridgeTarget, globals::GlobalOptions,
+                       pull_opts::PullOptions, local_target_dir::AbstractString)::Cmd
 
-Construct the `rsync` invocation command to retrieve remote simulation artifacts to the local workstation.
+Construct the `rsync` invocation that retrieves the remote output directory of `target`
+into `local_target_dir`. The password is not part of the command;
+[`run_authenticated`](@ref) supplies it.
 """
-function build_pull_command(target::BridgeTarget,
-                            globals::GlobalOptions,
-                            pull_opts::PullOptions,
-                            local_target_dir::AbstractString)::Cmd
-    cmd_args = String["sshpass", "-e", "rsync", "-av", "--partial"]
-    if globals.compress
-        push!(cmd_args, "-z")
+function build_pull_command(target::BridgeTarget, globals::GlobalOptions,
+                            pull_opts::PullOptions, local_target_dir::AbstractString)::Cmd
+    args = rsync_base_arguments(globals)
+    push!(args, "-e", build_ssh_rsh_string(target, globals))
+    for pattern in pull_opts.includes
+        push!(args, "--include=$(pattern)")
     end
-    if globals.bandwidth_limit > 0
-        push!(cmd_args, "--bwlimit=$(globals.bandwidth_limit)")
+    for pattern in pull_opts.excludes
+        push!(args, "--exclude=$(pattern)")
     end
-
-    push!(cmd_args, "-e", build_ssh_rsh_string(target, globals))
-
-    for inc in pull_opts.includes
-        push!(cmd_args, "--include=$(inc)")
-    end
-    for exc in pull_opts.excludes
-        push!(cmd_args, "--exclude=$(exc)")
-    end
-
-    remote_src_dir = normpath(joinpath(target.remote_dir, target.output_subdir))
-    src = "$(target.user)@$(target.host):$(remote_src_dir)/"
-    dst = endswith(local_target_dir, "/") ? local_target_dir : "$(local_target_dir)/"
-    push!(cmd_args, src, dst)
-
-    base_cmd = Cmd(cmd_args)
-    return setenv(base_cmd, merge(copy(ENV), Dict("SSHPASS" => target.password)))
+    source = "$(target.user)@$(rsync_host(target.host)):$(remote_output_directory(target))/"
+    destination = endswith(local_target_dir, '/') ? String(local_target_dir) :
+                  local_target_dir * "/"
+    push!(args, source, destination)
+    return Cmd(args)
 end
 
 """
-    prepare_local_pull_directory(
-        target::BridgeTarget,
-        pull_opts::PullOptions,
-    )::String
+    prepare_local_pull_directory(target::BridgeTarget, pull_opts::PullOptions)::String
 
-Prepare and resolve the local destination directory for harvested results per collision policy.
+Resolve and create the local destination directory of `target` according to the collision
+strategy: `:resume` keeps an existing directory, `:backup` renames it with a `#n` suffix
+before creating a fresh one, and `:abort` throws an `ErrorException`.
 """
-function prepare_local_pull_directory(target::BridgeTarget,
-                                      pull_opts::PullOptions)::String
+function prepare_local_pull_directory(target::BridgeTarget, pull_opts::PullOptions)::String
     dest_root = pull_opts.local_destination_root
     mkpath(dest_root)
-
     target_dir = joinpath(dest_root, target.name)
 
     if isdir(target_dir)
         if pull_opts.collision_strategy == :abort
             throw(ErrorException("Destination directory '$(target_dir)' already exists and collision_strategy is :abort."))
         elseif pull_opts.collision_strategy == :backup
-            # Append backup suffix (#1, #2, ...)
             backup_idx = 1
             backup_dir = "$(target_dir)#$(backup_idx)"
             while isdir(backup_dir)
                 backup_idx += 1
                 backup_dir = "$(target_dir)#$(backup_idx)"
             end
-            @info "Backing up existing destination directory" original=target_dir backup=backup_dir
+            @info "Backing up existing destination directory" original = target_dir backup = backup_dir
             mv(target_dir, backup_dir)
             mkpath(target_dir)
-        else
-            # :resume - Keep existing directory for rsync partial resumption
         end
     else
         mkpath(target_dir)
     end
-
     return target_dir
 end
 
 """
-    push_target(
-        target::BridgeTarget,
-        config::BridgeConfig;
-        dry_run::Bool = false,
-    )::TransferResult
+    push_target(target::BridgeTarget, config::BridgeConfig; dry_run::Bool=false)::TransferResult
 
-Deploy local source code to a single remote target node.
+Deploy the local source tree to a single target. The remote base directory is created
+first; a failure there is reported before `rsync` is attempted.
 """
-function push_target(target::BridgeTarget,
-                     config::BridgeConfig;
+function push_target(target::BridgeTarget, config::BridgeConfig;
                      dry_run::Bool=false)::TransferResult
     t_start = time()
-    if dry_run
-        cmd = build_push_command(target, config.globals, config.push)
-        return TransferResult(target, :push, true, 0, 0.0, "Dry run: `$(cmd)`")
-    end
-
-    # Ensure remote base directory exists
-    ensure_remote_directory(target, config.globals, target.remote_dir)
-
     cmd = build_push_command(target, config.globals, config.push)
-    out_buf = IOBuffer()
-    err_buf = IOBuffer()
-
-    try
-        p = run(pipeline(cmd; stdout=out_buf, stderr=err_buf); wait=true)
-        duration = time() - t_start
-        success = (p.exitcode == 0)
-        msg = success ? "Deployed successfully in $(round(duration; digits=2))s." :
-              "rsync exited with code $(p.exitcode): $(String(take!(err_buf)))"
-        return TransferResult(target, :push, success, p.exitcode, duration, msg)
-    catch e
-        duration = time() - t_start
-        err_msg = String(take!(err_buf))
-        detail = isempty(strip(err_msg)) ? sprint(showerror, e) : strip(err_msg)
-        return TransferResult(target, :push, false, -1, duration,
-                              "Transfer error: $(detail)")
+    if dry_run
+        return TransferResult(target, :push, true, 0, 0.0,
+                              "Dry run: $(command_string(cmd))")
     end
+
+    directory = ensure_remote_directory(target, config.globals, target.remote_dir)
+    if !directory.success
+        return TransferResult(target, :push, false, directory.exitcode, time() - t_start,
+                              "Remote directory creation failed (exit code $(directory.exitcode)): $(strip(directory.stderr))")
+    end
+
+    outcome = try
+        run_authenticated(cmd, target.password)
+    catch err
+        err isa Base.IOError || rethrow()
+        return TransferResult(target, :push, false, -1, time() - t_start,
+                              "Spawn failure: $(sprint(showerror, err))")
+    end
+    duration = time() - t_start
+    success = outcome.exitcode == 0
+    message = success ? "Deployed successfully in $(round(duration; digits=2)) s." :
+              "rsync exited with code $(outcome.exitcode): $(strip(outcome.stderr))"
+    return TransferResult(target, :push, success, outcome.exitcode, duration, message)
 end
 
 """
-    pull_target(
-        target::BridgeTarget,
-        config::BridgeConfig;
-        dry_run::Bool = false,
-        clean_remote::Union{Bool, Nothing} = nothing,
-    )::TransferResult
+    pull_target(target::BridgeTarget, config::BridgeConfig; dry_run::Bool=false,
+                clean_remote::Union{Bool, Nothing}=nothing)::TransferResult
 
-Harvest simulation output artifacts from a single remote target node.
-If `clean_remote` is true (or defaults to `config.pull.clean_remote_after_pull`), the remote project directory
-is safely purged upon 100% successful harvest.
+Harvest the remote output directory of a single target. When `clean_remote` is `true`, or
+`nothing` and `config.pull.clean_remote_after_pull` is set, the remote project directory
+is purged after a successful transfer.
 """
-function pull_target(target::BridgeTarget,
-                     config::BridgeConfig;
-                     dry_run::Bool=false,
+function pull_target(target::BridgeTarget, config::BridgeConfig; dry_run::Bool=false,
                      clean_remote::Union{Bool, Nothing}=nothing)::TransferResult
     t_start = time()
-    local_dir = joinpath(config.pull.local_destination_root, target.name)
     should_clean = clean_remote !== nothing ? clean_remote :
                    config.pull.clean_remote_after_pull
+    local_dir = joinpath(config.pull.local_destination_root, target.name)
 
     if dry_run
         cmd = build_pull_command(target, config.globals, config.pull, local_dir)
-        clean_note = should_clean ? " [Post-clean: rm -rf '$(target.remote_dir)']" : ""
-        return TransferResult(target, :pull, true, 0, 0.0, "Dry run: `$(cmd)`$(clean_note)")
+        clean_note = should_clean ? " [post-pull purge of '$(target.remote_dir)']" : ""
+        return TransferResult(target, :pull, true, 0, 0.0,
+                              "Dry run: $(command_string(cmd))$(clean_note)")
     end
 
-    dest_dir = prepare_local_pull_directory(target, config.pull)
+    dest_dir = try
+        prepare_local_pull_directory(target, config.pull)
+    catch err
+        err isa ErrorException || rethrow()
+        return TransferResult(target, :pull, false, -1, time() - t_start,
+                              "Destination refusal: $(sprint(showerror, err))")
+    end
     cmd = build_pull_command(target, config.globals, config.pull, dest_dir)
-    out_buf = IOBuffer()
-    err_buf = IOBuffer()
-
-    try
-        p = run(pipeline(cmd; stdout=out_buf, stderr=err_buf); wait=true)
-        duration = time() - t_start
-        success = (p.exitcode == 0)
-
-        if success
-            base_msg = "Harvested successfully in $(round(duration; digits=2))s."
-            if should_clean
-                clean_res = clean_remote_target(target, config.globals; dry_run=false)
-                if clean_res.success
-                    msg = "$(base_msg) Remote project purged."
-                else
-                    msg = "$(base_msg) (Warning: remote cleanup failed: $(clean_res.message))"
-                end
-            else
-                msg = base_msg
-            end
-            return TransferResult(target, :pull, true, p.exitcode, duration, msg)
-        else
-            err_msg = String(take!(err_buf))
-            return TransferResult(target, :pull, false, p.exitcode, duration,
-                                  "rsync exited with code $(p.exitcode): $(err_msg)")
-        end
-    catch e
-        duration = time() - t_start
-        err_msg = String(take!(err_buf))
-        detail = isempty(strip(err_msg)) ? sprint(showerror, e) : strip(err_msg)
-        return TransferResult(target, :pull, false, -1, duration,
-                              "Harvest error: $(detail)")
+    outcome = try
+        run_authenticated(cmd, target.password)
+    catch err
+        err isa Base.IOError || rethrow()
+        return TransferResult(target, :pull, false, -1, time() - t_start,
+                              "Spawn failure: $(sprint(showerror, err))")
     end
+    duration = time() - t_start
+    if outcome.exitcode != 0
+        return TransferResult(target, :pull, false, outcome.exitcode, duration,
+                              "rsync exited with code $(outcome.exitcode): $(strip(outcome.stderr))")
+    end
+
+    message = "Harvested successfully in $(round(duration; digits=2)) s."
+    if should_clean
+        clean_result = clean_remote_target(target, config.globals)
+        message *= clean_result.success ? " " * clean_result.message :
+                   " Remote purge failed: " * clean_result.message
+    end
+    return TransferResult(target, :pull, true, outcome.exitcode, duration, message)
 end
 
 """
-    push_all_targets(
-        config::BridgeConfig;
-        dry_run::Bool = false,
-    )::Vector{TransferResult}
+    push_all_targets(config::BridgeConfig; dry_run::Bool=false)::Vector{TransferResult}
 
-Deploy local project tree to all configured remote targets in parallel.
+Deploy the local source tree to all configured targets concurrently.
 """
 function push_all_targets(config::BridgeConfig;
                           dry_run::Bool=false)::Vector{TransferResult}
-    if !dry_run
-        check_local_binaries()
-    end
-    @info "Dispatching parallel push deployment" total_targets=length(config.targets) source=config.push.local_source_dir dry_run=dry_run
+    dry_run || check_local_binaries()
+    @info "Dispatching parallel push deployment" total_targets = length(config.targets) source = config.push.local_source_dir dry_run = dry_run
     tasks = map(config.targets) do target
         @async push_target(target, config; dry_run=dry_run)
     end
@@ -252,23 +214,17 @@ function push_all_targets(config::BridgeConfig;
 end
 
 """
-    pull_all_targets(
-        config::BridgeConfig;
-        dry_run::Bool = false,
-        clean_remote::Union{Bool, Nothing} = nothing,
-    )::Vector{TransferResult}
+    pull_all_targets(config::BridgeConfig; dry_run::Bool=false,
+                     clean_remote::Union{Bool, Nothing}=nothing)::Vector{TransferResult}
 
-Harvest simulation results from all configured remote targets in parallel.
+Harvest the remote output directories of all configured targets concurrently.
 """
-function pull_all_targets(config::BridgeConfig;
-                          dry_run::Bool=false,
+function pull_all_targets(config::BridgeConfig; dry_run::Bool=false,
                           clean_remote::Union{Bool, Nothing}=nothing)::Vector{TransferResult}
-    if !dry_run
-        check_local_binaries()
-    end
+    dry_run || check_local_binaries()
     should_clean = clean_remote !== nothing ? clean_remote :
                    config.pull.clean_remote_after_pull
-    @info "Dispatching parallel results harvest" total_targets=length(config.targets) destination=config.pull.local_destination_root clean_remote=should_clean dry_run=dry_run
+    @info "Dispatching parallel results harvest" total_targets = length(config.targets) destination = config.pull.local_destination_root clean_remote = should_clean dry_run = dry_run
     tasks = map(config.targets) do target
         @async pull_target(target, config; dry_run=dry_run, clean_remote=should_clean)
     end

@@ -51,6 +51,13 @@ struct BridgeTarget
     end
 end
 
+function Base.show(io::IO, target::BridgeTarget)
+    print(io, "BridgeTarget(", repr(target.name), ", ", target.user, "@", target.host, ":",
+          target.port, ", remote_dir = ", repr(target.remote_dir), ", output_subdir = ",
+          repr(target.output_subdir), ", password = <redacted>)")
+    return nothing
+end
+
 """
     GlobalOptions
 
