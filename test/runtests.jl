@@ -3,6 +3,7 @@ using SshDataBridge
 using Aqua
 using JET
 using ExplicitImports
+using JuliaFormatter
 using TOML: TOML
 
 @testset "SshDataBridge.jl" begin
@@ -18,6 +19,10 @@ using TOML: TOML
         @testset "ExplicitImports.jl" begin
             @test ExplicitImports.check_no_implicit_imports(SshDataBridge) === nothing
             @test ExplicitImports.check_no_stale_explicit_imports(SshDataBridge) === nothing
+        end
+
+        @testset "Formatting" begin
+            @test JuliaFormatter.format(pkgdir(SshDataBridge); overwrite=false)
         end
     end
 
