@@ -161,6 +161,11 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
         @test pull_valid.collision_strategy == :backup
         @test pull_valid.clean_remote_after_pull == true
         @test PullOptions("/x").excludes == SshDataBridge.DEFAULT_PULL_EXCLUDES
+        @test PullOptions("/x").purge_scope == :output
+        @test PullOptions("/x", "output", String[], String[], :resume, false,
+                          :project).purge_scope == :project
+        @test_throws ArgumentError PullOptions("/x", "output", String[], String[], :resume,
+                                               false, :everything)
         @test PullOptions("/x", "out/").output_subdir == "out"
         @test_throws ArgumentError PullOptions("")
         @test_throws ArgumentError PullOptions("/local/dest", "")
@@ -203,6 +208,7 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
         excludes = ["*.tmp"]
         collision_strategy = "backup"
         clean_remote_after_pull = true
+        purge_scope = "project"
 
         [[targets]]
         name = "GPU-Worker-1"
@@ -243,6 +249,7 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
             @test config.pull.excludes == ["*.tmp"]
             @test config.pull.collision_strategy == :backup
             @test config.pull.clean_remote_after_pull == true
+            @test config.pull.purge_scope == :project
 
             @test length(config.targets) == 2
             t1 = config.targets[1]
@@ -269,6 +276,13 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
 
         @test_throws ArgumentError parse_config(Dict{String, Any}("globals" => Dict()))
         @test_throws ArgumentError parse_config(Dict{String, Any}("targets" => Any[]))
+        @test_throws ArgumentError parse_config(Dict{String, Any}("pull" =>
+                                                                      Dict{String, Any}("purge_scope" => "everything"),
+                                                                  "targets" =>
+                                                                      Any[Dict{String, Any}("host" => "10.0.0.1",
+                                                                                            "user" => "u",
+                                                                                            "password" => "p",
+                                                                                            "remote_dir" => "/a/b")]))
     end
 
     @testset "Command Construction & Collision Strategies" begin
@@ -312,6 +326,10 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
         @test ipv6_push.exec[end] == "worker@[2001:db8::10]:/srv/sim/"
         @test SshDataBridge.build_ssh_command(ipv6_target, globals, "true").exec[end - 1] ==
               "worker@2001:db8::10"
+
+        @test purge_path(target, :output) == "/srv/sim_01/results"
+        @test purge_path(target, :project) == "/srv/sim_01"
+        @test_throws ArgumentError purge_path(target, :bogus)
 
         # Remote commands are POSIX-quoted and use ssh -n with a single password prompt
         spaced = BridgeTarget("Spaced", "10.0.0.9", 22, "worker", "pw", "/srv/sim a",
@@ -472,7 +490,36 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
                 @test occursin("purged", result.message)
                 invocations = recorded_invocations(args_file)
                 @test length(invocations) == 2
-                @test occursin("rm -rf -- '/rem/sim a'", invocations[2])
+                @test occursin("rm -rf -- '/rem/sim a/output'", invocations[2])
+            end
+
+            # A filtered harvest never purges, whatever the flags say
+            filtered_opts = PullOptions(harvest_root, "output", ["*.csv"], String[],
+                                        :resume, true)
+            filtered_config = BridgeConfig(globals, push_opts, filtered_opts, [target])
+            with_stub_binaries() do args_file
+                result = pull_target(target, filtered_config; clean_remote=true)
+                @test result.success
+                @test occursin("purge skipped", result.message)
+                @test length(recorded_invocations(args_file)) == 1
+            end
+
+            # Project scope removes the base directory
+            with_stub_binaries() do args_file
+                result = clean_remote_target(target, globals; scope=:project)
+                @test result.success
+                @test occursin("project scope", result.message)
+                @test occursin("rm -rf -- '/rem/sim a'",
+                               only(recorded_invocations(args_file)))
+            end
+            project_opts = PullOptions(harvest_root, "output", String[], String[], :resume,
+                                       false, :project)
+            project_config = BridgeConfig(globals, push_opts, project_opts, [target])
+            with_stub_binaries() do args_file
+                results = clean_all_remote_targets(project_config)
+                @test only(results).success
+                @test occursin("rm -rf -- '/rem/sim a'",
+                               only(recorded_invocations(args_file)))
             end
 
             with_stub_binaries(; exit_code=1, stderr_text="rm: cannot remove") do _
@@ -529,12 +576,27 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
         @test all(r -> r.action == :pull, pull_results)
         @test all(r -> occursin("Dry run: sshpass -d 0 rsync", r.message), pull_results)
         @test all(r -> occursin("post-pull purge of '/rem/sim_", r.message), pull_results)
+        @test occursin("post-pull purge of '/rem/sim_a/output'", pull_results[1].message)
+
+        filtered_config = BridgeConfig(globals, push_opts,
+                                       PullOptions("/local/dst", "output", ["*.csv"],
+                                                   String[], :resume, true),
+                                       [target1, target2])
+        filtered_results = pull_all_targets(filtered_config; dry_run=true)
+        @test all(r -> occursin("purge skipped", r.message), filtered_results)
+
+        project_config = BridgeConfig(globals, push_opts,
+                                      PullOptions("/local/dst", "output", String[],
+                                                  String[], :resume, true, :project),
+                                      [target1, target2])
+        project_clean = clean_all_remote_targets(project_config; dry_run=true)
+        @test endswith(project_clean[1].message, "'rm -rf -- /rem/sim_a'")
 
         clean_results = clean_all_remote_targets(config; dry_run=true)
         @test length(clean_results) == 2
         @test all(r -> r.success, clean_results)
         @test all(r -> r.action == :clean, clean_results)
-        @test occursin("rm -rf -- /rem/sim_a", clean_results[1].message)
+        @test endswith(clean_results[1].message, "'rm -rf -- /rem/sim_a/output'")
         @test occursin("ssh -n -p 22", clean_results[1].message)
 
         for result in vcat(push_results, pull_results, clean_results)

@@ -1,5 +1,6 @@
 const VALID_HOST_KEY_POLICIES = ("accept-new", "yes", "no")
 const VALID_COLLISION_STRATEGIES = (:resume, :backup, :abort)
+const VALID_PURGE_SCOPES = (:output, :project)
 
 const HOSTNAME_PATTERN = r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\.?$"
 const IPV6_PATTERN = r"^\[?(?=[0-9A-Fa-f:.]*[0-9A-Fa-f])[0-9A-Fa-f]{0,4}(?::[0-9A-Fa-f]{0,4}){2,7}(?:\.[0-9]{1,3}){0,3}\]?$"
@@ -196,13 +197,15 @@ end
 
 """
     validate_pull_options(local_destination_root::AbstractString,
-                          output_subdir::AbstractString, collision_strategy::Symbol)
+                          output_subdir::AbstractString, collision_strategy::Symbol,
+                          purge_scope::Symbol)
 
 Verify the harvesting parameters. Throws `ArgumentError` on violation.
 """
 function validate_pull_options(local_destination_root::AbstractString,
                                output_subdir::AbstractString,
-                               collision_strategy::Symbol)
+                               collision_strategy::Symbol,
+                               purge_scope::Symbol)
     if isempty(local_destination_root)
         throw(ArgumentError("Pull parameter 'local_destination_root' must be a non-empty path."))
     end
@@ -212,6 +215,9 @@ function validate_pull_options(local_destination_root::AbstractString,
     validate_relative_subdirectory(output_subdir, "output_subdir", "[pull] section")
     if !(collision_strategy in VALID_COLLISION_STRATEGIES)
         throw(ArgumentError("Pull parameter 'collision_strategy' must be one of $(VALID_COLLISION_STRATEGIES) (received: :$(collision_strategy))."))
+    end
+    if !(purge_scope in VALID_PURGE_SCOPES)
+        throw(ArgumentError("Pull parameter 'purge_scope' must be one of $(VALID_PURGE_SCOPES) (received: :$(purge_scope))."))
     end
     return nothing
 end

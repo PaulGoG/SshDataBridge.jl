@@ -140,6 +140,7 @@ Parameters of the retrieval of remote output directories to the local workstatio
 - `excludes::Vector{String}`: `rsync` exclude patterns.
 - `collision_strategy::Symbol`: `:resume`, `:backup`, or `:abort` when the local directory exists.
 - `clean_remote_after_pull::Bool`: Purge the remote directory after a successful harvest.
+- `purge_scope::Symbol`: Directory removed by a purge: `:output` (the output directory) or `:project` (the whole base directory).
 """
 struct PullOptions
     local_destination_root::String
@@ -148,14 +149,17 @@ struct PullOptions
     excludes::Vector{String}
     collision_strategy::Symbol
     clean_remote_after_pull::Bool
+    purge_scope::Symbol
 
     function PullOptions(local_destination_root::AbstractString,
                          output_subdir::AbstractString="output",
                          includes::AbstractVector=String[],
                          excludes::AbstractVector=DEFAULT_PULL_EXCLUDES,
                          collision_strategy::Symbol=:resume,
-                         clean_remote_after_pull::Bool=false)
-        validate_pull_options(local_destination_root, output_subdir, collision_strategy)
+                         clean_remote_after_pull::Bool=false,
+                         purge_scope::Symbol=:output)
+        validate_pull_options(local_destination_root, output_subdir, collision_strategy,
+                              purge_scope)
         validate_patterns(includes, "[pull].includes")
         validate_patterns(excludes, "[pull].excludes")
         return new(String(local_destination_root),
@@ -163,7 +167,8 @@ struct PullOptions
                    String[String(i) for i in includes],
                    String[String(e) for e in excludes],
                    collision_strategy,
-                   clean_remote_after_pull)
+                   clean_remote_after_pull,
+                   purge_scope)
     end
 end
 
