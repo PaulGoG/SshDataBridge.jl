@@ -9,8 +9,7 @@ SshDataBridge/
 ├── .github/
 │   ├── dependabot.yml       # Monthly updates of the GitHub Actions pins
 │   └── workflows/
-│       ├── CI.yml           # Test matrix: Julia LTS, latest stable, pre-release
-│       └── TagBot.yml       # Release tagging once the package is registered
+│       └── CI.yml           # Test matrix: Julia LTS, latest stable, pre-release
 ├── .gitignore               # Credentials, harvested data, manifests
 ├── .JuliaFormatter.toml     # YAS style, 92 columns
 ├── CHANGELOG.md             # Release history
@@ -49,19 +48,22 @@ sudo dnf install sshpass rsync openssh-clients          # Fedora, RHEL
 sudo apt-get install sshpass rsync openssh-client       # Debian, Ubuntu
 ```
 
-## Environment
+## Installation
 
-The root environment depends only on the standard library. Instantiate it once:
+Clone the repository and use it in place; this is the intended way to run the driver script, which activates the root environment itself, so no `--project` flag is needed:
 
 ```bash
-julia activate.jl
+git clone https://github.com/PaulGoG/SshDataBridge.jl.git
+cd SshDataBridge.jl
+julia activate.jl          # root environment (standard library only)
+julia test/activate.jl     # test environment, developed against the local source
+julia format/activate.jl   # formatting environment
 ```
 
-The driver script activates the environment itself, so no `--project` flag is needed. The test environment lives in `test/` and develops the package from the local source:
+The package is not registered. To use the library API from another environment, add it by URL:
 
 ```bash
-julia test/activate.jl
-julia format/activate.jl   # formatting environment
+julia -e 'using Pkg; Pkg.add(url="https://github.com/PaulGoG/SshDataBridge.jl")'
 ```
 
 ## Entry points
