@@ -1,14 +1,18 @@
+const REQUIRED_LOCAL_BINARIES = ("ssh", "sshpass", "rsync")
+
 """
     check_local_binaries()
 
-Verify that required system utilities (`ssh`, `sshpass`, `rsync`) exist on the local system.
+Verify that `ssh`, `sshpass`, and `rsync` are available in `PATH`. Throws an
+`ErrorException` naming the missing binaries otherwise.
 """
 function check_local_binaries()
-    required = ["ssh", "sshpass", "rsync"]
-    missing = filter(bin -> Sys.which(bin) === nothing, required)
-    if !isempty(missing)
-        throw(ErrorException("Missing required local binaries in PATH: $(join(missing, ", ")). " *
-                             "Please ensure they are installed (e.g. 'sudo dnf install sshpass rsync')."))
+    missing_binaries = String[bin
+                              for bin in REQUIRED_LOCAL_BINARIES
+                              if Sys.which(bin) === nothing]
+    if !isempty(missing_binaries)
+        throw(ErrorException("Missing required local binaries in PATH: $(join(missing_binaries, ", ")). " *
+                             "Install them (Fedora: 'sudo dnf install sshpass rsync openssh-clients')."))
     end
     return nothing
 end
@@ -16,7 +20,7 @@ end
 """
     resolve_target_policy(target::BridgeTarget, globals::GlobalOptions)::String
 
-Resolve effective host key policy for a target.
+Return the effective host key policy of `target`, honouring its override when present.
 """
 function resolve_target_policy(target::BridgeTarget, globals::GlobalOptions)::String
     return target.strict_host_key_checking !== nothing ? target.strict_host_key_checking :
@@ -24,78 +28,92 @@ function resolve_target_policy(target::BridgeTarget, globals::GlobalOptions)::St
 end
 
 """
-    build_ssh_base_command(target::BridgeTarget, globals::GlobalOptions)::Vector{String}
+    build_ssh_command(target::BridgeTarget, globals::GlobalOptions,
+                      remote_command::AbstractString)::Cmd
 
-Build base command argument list for OpenSSH invocations.
+Construct the `sshpass -d 0 ssh -n ...` invocation that executes `remote_command` on
+`target`. The password is not part of the command; [`run_authenticated`](@ref) supplies it
+through standard input at execution time.
 """
-function build_ssh_base_command(target::BridgeTarget,
-                                globals::GlobalOptions)::Vector{String}
+function build_ssh_command(target::BridgeTarget, globals::GlobalOptions,
+                           remote_command::AbstractString)::Cmd
     policy = resolve_target_policy(target, globals)
-    return String["ssh",
-                  "-p", string(target.port),
-                  "-o", "StrictHostKeyChecking=$(policy)",
-                  "-o", "ConnectTimeout=$(globals.connect_timeout)",
-                  "-o", "BatchMode=no",
-                  "$(target.user)@$(target.host)"]
+    return Cmd(String["sshpass", "-d", "0", "ssh", "-n", "-p", string(target.port),
+                      "-o", "StrictHostKeyChecking=$(policy)",
+                      "-o", "ConnectTimeout=$(globals.connect_timeout)",
+                      "-o", "BatchMode=no",
+                      "-o", "NumberOfPasswordPrompts=1",
+                      "$(target.user)@$(target.host)",
+                      String(remote_command)])
+end
+
+"""
+    remote_output_directory(target::BridgeTarget)::String
+
+Absolute path of the output directory of `target` on the remote host.
+"""
+function remote_output_directory(target::BridgeTarget)::String
+    return normpath(joinpath(target.remote_dir, target.output_subdir))
+end
+
+"""
+    build_probe_script(target::BridgeTarget)::String
+
+Shell script executed on the remote host by [`probe_target`](@ref). It reports whether
+`rsync` is installed and whether the base and output directories exist; every path is
+POSIX-quoted.
+"""
+function build_probe_script(target::BridgeTarget)::String
+    base_dir = Base.shell_escape_posixly(target.remote_dir)
+    output_dir = Base.shell_escape_posixly(remote_output_directory(target))
+    return join(["command -v rsync >/dev/null 2>&1 && echo RSYNC_OK || echo RSYNC_MISSING",
+                 "test -d $(base_dir) && echo DIR_EXISTS || echo DIR_MISSING",
+                 "test -d $(output_dir) && echo OUT_EXISTS || echo OUT_MISSING"], "; ")
 end
 
 """
     probe_target(target::BridgeTarget, globals::GlobalOptions)::ProbeResult
 
-Perform an automated remote diagnostic check over SSH.
-Probes SSH connectivity, verifies remote `rsync` presence, and checks directory existence.
+Check SSH reachability of `target`, the presence of `rsync` on the remote host, and the
+existence of the base and output directories. Connection and authentication failures are
+reported through the result, never thrown.
 """
 function probe_target(target::BridgeTarget, globals::GlobalOptions)::ProbeResult
-    remote_out = normpath(joinpath(target.remote_dir, target.output_subdir))
-    probe_script = """
-    if which rsync >/dev/null 2>&1; then echo "RSYNC_OK"; else echo "RSYNC_MISSING"; fi
-    if [ -d "$(target.remote_dir)" ]; then echo "DIR_EXISTS"; else echo "DIR_MISSING"; fi
-    if [ -d "$(remote_out)" ]; then echo "OUT_EXISTS"; else echo "OUT_MISSING"; fi
-    """
-
-    ssh_args = build_ssh_base_command(target, globals)
-    cmd_args = String["sshpass", "-e"]
-    append!(cmd_args, ssh_args)
-    push!(cmd_args, probe_script)
-
-    cmd = setenv(Cmd(cmd_args), merge(copy(ENV), Dict("SSHPASS" => target.password)))
-    out_buf = IOBuffer()
-    err_buf = IOBuffer()
-
-    try
-        p = run(pipeline(cmd; stdout=out_buf, stderr=err_buf); wait=true)
-        output = String(take!(out_buf))
-        ssh_ok = (p.exitcode == 0)
-        rsync_ok = occursin("RSYNC_OK", output)
-        remote_dir_exists = occursin("DIR_EXISTS", output)
-        remote_output_dir_exists = occursin("OUT_EXISTS", output)
-
-        messages = String[]
-        if !rsync_ok
-            push!(messages, "rsync missing on remote")
-        end
-        if !remote_dir_exists
-            push!(messages, "remote base dir missing ('$(target.remote_dir)')")
-        end
-        if !remote_output_dir_exists
-            push!(messages, "remote output dir missing ('$(remote_out)')")
-        end
-
-        msg = isempty(messages) ? "All remote diagnostics passed." : join(messages, "; ")
-        return ProbeResult(target, ssh_ok && rsync_ok, ssh_ok, rsync_ok, remote_dir_exists,
-                           remote_output_dir_exists, msg)
-    catch e
-        err_msg = String(take!(err_buf))
-        detail = isempty(strip(err_msg)) ? sprint(showerror, e) : strip(err_msg)
+    cmd = build_ssh_command(target, globals, build_probe_script(target))
+    outcome = try
+        run_authenticated(cmd, target.password)
+    catch err
+        err isa Base.IOError || rethrow()
         return ProbeResult(target, false, false, false, false, false,
-                           "Connection failure: $(detail)")
+                           "Spawn failure: $(sprint(showerror, err))")
     end
+
+    ssh_ok = outcome.exitcode == 0
+    rsync_ok = occursin("RSYNC_OK", outcome.stdout)
+    remote_dir_exists = occursin("DIR_EXISTS", outcome.stdout)
+    remote_output_dir_exists = occursin("OUT_EXISTS", outcome.stdout)
+
+    messages = String[]
+    if !ssh_ok
+        push!(messages,
+              "ssh exited with code $(outcome.exitcode): $(strip(outcome.stderr))")
+    else
+        rsync_ok || push!(messages, "rsync missing on remote")
+        remote_dir_exists ||
+            push!(messages, "remote base dir missing ('$(target.remote_dir)')")
+        remote_output_dir_exists ||
+            push!(messages,
+                  "remote output dir missing ('$(remote_output_directory(target))')")
+    end
+    message = isempty(messages) ? "All remote diagnostics passed." : join(messages, "; ")
+    return ProbeResult(target, ssh_ok && rsync_ok, ssh_ok, rsync_ok, remote_dir_exists,
+                       remote_output_dir_exists, message)
 end
 
 """
     probe_all_targets(config::BridgeConfig)::Vector{ProbeResult}
 
-Probe all configured remote targets concurrently using Julia tasks.
+Probe every configured target concurrently.
 """
 function probe_all_targets(config::BridgeConfig)::Vector{ProbeResult}
     check_local_binaries()
@@ -106,92 +124,75 @@ function probe_all_targets(config::BridgeConfig)::Vector{ProbeResult}
 end
 
 """
-    ensure_remote_directory(target::BridgeTarget, globals::GlobalOptions, remote_path::AbstractString)::Bool
+    ensure_remote_directory(target::BridgeTarget, globals::GlobalOptions,
+                            remote_path::AbstractString)
 
-Ensure a remote directory exists via `mkdir -p`.
+Create `remote_path` on `target` with `mkdir -p`. Returns `(; success, exitcode, stderr)`.
 """
 function ensure_remote_directory(target::BridgeTarget, globals::GlobalOptions,
-                                 remote_path::AbstractString)::Bool
-    ssh_args = build_ssh_base_command(target, globals)
-    cmd_args = String["sshpass", "-e"]
-    append!(cmd_args, ssh_args)
-    push!(cmd_args, "mkdir -p '$(remote_path)'")
-
-    cmd = setenv(Cmd(cmd_args), merge(copy(ENV), Dict("SSHPASS" => target.password)))
-    try
-        p = run(cmd; wait=true)
-        return p.exitcode == 0
-    catch
-        return false
+                                 remote_path::AbstractString)
+    remote_command = "mkdir -p -- " * Base.shell_escape_posixly(remote_path)
+    cmd = build_ssh_command(target, globals, remote_command)
+    outcome = try
+        run_authenticated(cmd, target.password)
+    catch err
+        err isa Base.IOError || rethrow()
+        return (; success=false, exitcode=-1, stderr=sprint(showerror, err))
     end
+    return (; success=outcome.exitcode == 0, exitcode=outcome.exitcode,
+            stderr=outcome.stderr)
 end
 
 """
-    clean_remote_target(
-        target::BridgeTarget,
-        globals::GlobalOptions;
-        dry_run::Bool = false,
-    )::TransferResult
+    clean_remote_target(target::BridgeTarget, globals::GlobalOptions;
+                        dry_run::Bool=false)::TransferResult
 
-Safely remove the remote project directory (`target.remote_dir`) on a target machine over SSH.
-Validates that the path is not a critical system/user root before execution.
+Remove the project directory of `target` on the remote host with `rm -rf`. The path is
+checked with [`validate_remote_path_safety`](@ref) before any command is issued; a
+refusal is reported as a failed result.
 """
-function clean_remote_target(target::BridgeTarget,
-                             globals::GlobalOptions;
+function clean_remote_target(target::BridgeTarget, globals::GlobalOptions;
                              dry_run::Bool=false)::TransferResult
     t_start = time()
+    path = target.remote_dir
     try
-        validate_remote_path_safety(target.remote_dir, target.user)
-    catch e
-        duration = time() - t_start
-        return TransferResult(target, :clean, false, -1, duration,
-                              "Safety refusal: $(sprint(showerror, e))")
+        validate_remote_path_safety(path, target.user)
+    catch err
+        err isa ArgumentError || rethrow()
+        return TransferResult(target, :clean, false, -1, 0.0,
+                              "Safety refusal: $(sprint(showerror, err))")
     end
 
-    ssh_args = build_ssh_base_command(target, globals)
-    cmd_args = String["sshpass", "-e"]
-    append!(cmd_args, ssh_args)
-    push!(cmd_args, "rm -rf -- '$(target.remote_dir)'")
-
-    cmd = setenv(Cmd(cmd_args), merge(copy(ENV), Dict("SSHPASS" => target.password)))
-
+    cmd = build_ssh_command(target, globals, "rm -rf -- " * Base.shell_escape_posixly(path))
     if dry_run
-        return TransferResult(target, :clean, true, 0, 0.0, "Dry run: `$(cmd)`")
+        return TransferResult(target, :clean, true, 0, 0.0,
+                              "Dry run: $(command_string(cmd))")
     end
 
-    out_buf = IOBuffer()
-    err_buf = IOBuffer()
-    try
-        p = run(pipeline(cmd; stdout=out_buf, stderr=err_buf); wait=true)
-        duration = time() - t_start
-        success = (p.exitcode == 0)
-        msg = success ?
-              "Remote directory '$(target.remote_dir)' purged successfully in $(round(duration; digits=2))s." :
-              "rm exited with code $(p.exitcode): $(String(take!(err_buf)))"
-        return TransferResult(target, :clean, success, p.exitcode, duration, msg)
-    catch e
-        duration = time() - t_start
-        err_msg = String(take!(err_buf))
-        detail = isempty(strip(err_msg)) ? sprint(showerror, e) : strip(err_msg)
-        return TransferResult(target, :clean, false, -1, duration,
-                              "Cleanup error: $(detail)")
+    outcome = try
+        run_authenticated(cmd, target.password)
+    catch err
+        err isa Base.IOError || rethrow()
+        return TransferResult(target, :clean, false, -1, time() - t_start,
+                              "Spawn failure: $(sprint(showerror, err))")
     end
+    duration = time() - t_start
+    success = outcome.exitcode == 0
+    message = success ?
+              "Remote directory '$(path)' purged in $(round(duration; digits=2)) s." :
+              "rm exited with code $(outcome.exitcode): $(strip(outcome.stderr))"
+    return TransferResult(target, :clean, success, outcome.exitcode, duration, message)
 end
 
 """
-    clean_all_remote_targets(
-        config::BridgeConfig;
-        dry_run::Bool = false,
-    )::Vector{TransferResult}
+    clean_all_remote_targets(config::BridgeConfig; dry_run::Bool=false)::Vector{TransferResult}
 
-Purge remote project directories across all configured targets in parallel.
+Purge the remote project directories of all configured targets concurrently.
 """
 function clean_all_remote_targets(config::BridgeConfig;
                                   dry_run::Bool=false)::Vector{TransferResult}
-    if !dry_run
-        check_local_binaries()
-    end
-    @info "Dispatching parallel remote project purge" total_targets=length(config.targets) dry_run=dry_run
+    dry_run || check_local_binaries()
+    @info "Dispatching parallel remote project purge" total_targets = length(config.targets) dry_run = dry_run
     tasks = map(config.targets) do target
         @async clean_remote_target(target, config.globals; dry_run=dry_run)
     end
