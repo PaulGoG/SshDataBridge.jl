@@ -16,8 +16,8 @@ SshDataBridge automates `ssh` and `rsync` sessions to remote compute nodes using
 
 - Any process running under the same user can read the configuration file and can inspect `sshpass` while it runs.
 - Host key policy `"no"` disables protection against a substituted host; the default `"accept-new"` trusts a host on first contact.
-- The password is delivered over a pipe; on systems where `/proc/<pid>/fd` is readable by other users of the same account, that pipe is briefly observable.
+- The password is delivered over a pipe; a process running as the same user can inspect that pipe through `/proc/<pid>/fd` while `sshpass` runs.
 
 ## Reporting a vulnerability
 
-Use GitHub's private vulnerability reporting on this repository, or write to the maintainer address listed in `Project.toml`. Please do not open a public issue for an undisclosed vulnerability. Reports are acknowledged within a week.
+Use GitHub's private vulnerability reporting on this repository, or write to the maintainer address listed in `Project.toml`. Please do not open a public issue for an undisclosed vulnerability.
