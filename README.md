@@ -62,7 +62,7 @@ Results retrieval uses `rsync -avz --partial`, resuming interrupted large file d
 
 ## 3. Configuration Specification
 
-Create `config.toml` (modeled after [`config.example.toml`](file:///path/to/workspace/SshDataBridge/config.example.toml)):
+Create `config.toml` (modeled after [`config.example.toml`](config.example.toml)):
 
 ```toml
 [globals]
