@@ -1,17 +1,38 @@
+const DEFAULT_PUSH_EXCLUDES = String[".git", ".github", ".vscode", "*.swp", "*~",
+                                     "data/output", "harvested_results"]
+const DEFAULT_PULL_EXCLUDES = String["*.tmp", "core.*", "*~"]
+
+"""
+    MissingBinaryError(binaries::Vector{String})
+
+Raised when required system executables are not found in `PATH`.
+"""
+struct MissingBinaryError <: Exception
+    binaries::Vector{String}
+end
+
+function Base.showerror(io::IO, err::MissingBinaryError)
+    print(io, "Required system binaries not found in PATH: ", join(err.binaries, ", "),
+          ". Install them (Fedora: 'sudo dnf install sshpass rsync openssh-clients git').")
+    return nothing
+end
+
 """
     BridgeTarget
 
-Immutable data structure defining a remote computing node and its simulation path mapping.
+Immutable description of a remote computing node and its campaign directory layout.
 
 # Fields
-- `name::String`: Unique human-readable label identifying the target node (e.g. "RTX-5070Ti").
-- `host::String`: Remote IPv4/IPv6 address or domain name.
-- `port::Int`: SSH daemon port number (1 to 65535).
-- `user::String`: Remote authentication username.
-- `password::String`: Remote authentication password.
-- `remote_dir::String`: Base directory on the remote host for code deployment and campaign root.
-- `output_subdir::String`: Relative subdirectory under `remote_dir` holding output artifacts (default: "output").
-- `strict_host_key_checking::Union{String, Nothing}`: Optional target-specific override for host key policy.
+- `name::String`: Unique label; it also names the local harvest directory.
+- `host::String`: DNS hostname, IPv4 address, or IPv6 literal.
+- `port::Int`: SSH daemon port in `1:65535`.
+- `user::String`: Remote user name.
+- `password::String`: Remote password; never printed by `show`.
+- `remote_dir::String`: Absolute base directory of the campaign on the remote host.
+- `output_subdir::String`: Output directory relative to `remote_dir` (default `"output"`).
+- `strict_host_key_checking::Union{String, Nothing}`: Optional host key policy override.
+
+Trailing slashes of `remote_dir` and `output_subdir` are removed on construction.
 """
 struct BridgeTarget
     name::String
@@ -31,23 +52,17 @@ struct BridgeTarget
                           remote_dir::AbstractString,
                           output_subdir::AbstractString="output",
                           strict_host_key_checking::Union{AbstractString, Nothing}=nothing)
-        validate_bridge_target_fields(name,
-                                      host,
-                                      port,
-                                      user,
-                                      password,
-                                      remote_dir,
-                                      output_subdir,
-                                      strict_host_key_checking)
-        return new(String(strip(name)),
-                   String(strip(host)),
+        validate_bridge_target_fields(name, host, port, user, password, remote_dir,
+                                      output_subdir, strict_host_key_checking)
+        return new(String(name),
+                   String(host),
                    Int(port),
-                   String(strip(user)),
+                   String(user),
                    String(password),
-                   String(strip(remote_dir)),
-                   String(strip(output_subdir)),
-                   strict_host_key_checking !== nothing ?
-                   String(strip(strict_host_key_checking)) : nothing)
+                   String(rstrip(remote_dir, '/')),
+                   String(rstrip(output_subdir, '/')),
+                   strict_host_key_checking === nothing ? nothing :
+                   String(strict_host_key_checking))
     end
 end
 
@@ -61,13 +76,13 @@ end
 """
     GlobalOptions
 
-Global transport and SSH network connection parameters.
+Transport parameters shared by all targets.
 
 # Fields
-- `connect_timeout::Int`: SSH TCP connection timeout in seconds.
-- `strict_host_key_checking::String`: Default host key policy ("accept-new", "yes", or "no").
-- `compress::Bool`: Enables rsync in-flight compression (`-z`).
-- `bandwidth_limit::Int`: Network bandwidth cap in KBytes/second (0 = unlimited).
+- `connect_timeout::Int`: SSH connection timeout in seconds.
+- `strict_host_key_checking::String`: Default host key policy (`"accept-new"`, `"yes"`, `"no"`).
+- `compress::Bool`: Whether `rsync` compresses in flight (`-z`).
+- `bandwidth_limit::Int`: Bandwidth cap in KB/s per transfer; `0` means unlimited.
 """
 struct GlobalOptions
     connect_timeout::Int
@@ -80,9 +95,7 @@ struct GlobalOptions
                            compress::Bool=true,
                            bandwidth_limit::Integer=0)
         validate_global_options(connect_timeout, strict_host_key_checking, bandwidth_limit)
-        return new(Int(connect_timeout),
-                   String(strip(strict_host_key_checking)),
-                   compress,
+        return new(Int(connect_timeout), String(strict_host_key_checking), compress,
                    Int(bandwidth_limit))
     end
 end
@@ -90,13 +103,13 @@ end
 """
     PushOptions
 
-Configuration parameters governing local project deployment to remote compute nodes.
+Parameters of the deployment of the local source tree to the remote targets.
 
 # Fields
-- `local_source_dir::String`: Path to the local project folder to deploy.
-- `excludes::Vector{String}`: Array of glob patterns excluded from deployment.
-- `require_clean_git::Bool`: If true, aborts deployment when local git working tree is dirty.
-- `use_gitignore::Bool`: If true, automatically honors .gitignore rules in the deployed project.
+- `local_source_dir::String`: Local project directory to deploy.
+- `excludes::Vector{String}`: `rsync` exclude patterns.
+- `require_clean_git::Bool`: Abort when the local git working tree has uncommitted changes.
+- `use_gitignore::Bool`: Honour the `.gitignore` rules of the source tree during deployment.
 """
 struct PushOptions
     local_source_dir::String
@@ -105,35 +118,28 @@ struct PushOptions
     use_gitignore::Bool
 
     function PushOptions(local_source_dir::AbstractString,
-                         excludes::AbstractVector=String[".git",
-                                                         ".github",
-                                                         ".vscode",
-                                                         "*.swp",
-                                                         "*~",
-                                                         "data/output",
-                                                         "harvested_results"],
+                         excludes::AbstractVector=DEFAULT_PUSH_EXCLUDES,
                          require_clean_git::Bool=false,
                          use_gitignore::Bool=true)
         validate_push_options(local_source_dir)
-        return new(String(strip(local_source_dir)),
-                   String[String(strip(string(e))) for e in excludes],
-                   require_clean_git,
-                   use_gitignore)
+        validate_patterns(excludes, "[push].excludes")
+        return new(String(local_source_dir), String[String(e) for e in excludes],
+                   require_clean_git, use_gitignore)
     end
 end
 
 """
     PullOptions
 
-Configuration parameters governing remote simulation artifact retrieval to the local workstation.
+Parameters of the retrieval of remote output directories to the local workstation.
 
 # Fields
-- `local_destination_root::String`: Local root directory where harvested results are stored.
-- `output_subdir::String`: Default relative output folder on remote nodes (e.g. "output").
-- `includes::Vector{String}`: Glob patterns to explicitly include during rsync retrieval.
-- `excludes::Vector{String}`: Glob patterns to exclude during retrieval.
-- `collision_strategy::Symbol`: Conflict handling strategy (`:resume`, `:backup`, `:abort`).
-- `clean_remote_after_pull::Bool`: If true, purges the remote project directory upon 100% successful harvest.
+- `local_destination_root::String`: Local root under which one directory per target is created.
+- `output_subdir::String`: Default output directory relative to each target's `remote_dir`.
+- `includes::Vector{String}`: `rsync` include patterns; empty means everything.
+- `excludes::Vector{String}`: `rsync` exclude patterns.
+- `collision_strategy::Symbol`: `:resume`, `:backup`, or `:abort` when the local directory exists.
+- `clean_remote_after_pull::Bool`: Purge the remote directory after a successful harvest.
 """
 struct PullOptions
     local_destination_root::String
@@ -146,14 +152,16 @@ struct PullOptions
     function PullOptions(local_destination_root::AbstractString,
                          output_subdir::AbstractString="output",
                          includes::AbstractVector=String[],
-                         excludes::AbstractVector=String["*.tmp", "core.*", "*~"],
+                         excludes::AbstractVector=DEFAULT_PULL_EXCLUDES,
                          collision_strategy::Symbol=:resume,
                          clean_remote_after_pull::Bool=false)
         validate_pull_options(local_destination_root, output_subdir, collision_strategy)
-        return new(String(strip(local_destination_root)),
-                   String(strip(output_subdir)),
-                   String[String(strip(string(i))) for i in includes],
-                   String[String(strip(string(e))) for e in excludes],
+        validate_patterns(includes, "[pull].includes")
+        validate_patterns(excludes, "[pull].excludes")
+        return new(String(local_destination_root),
+                   String(rstrip(output_subdir, '/')),
+                   String[String(i) for i in includes],
+                   String[String(e) for e in excludes],
                    collision_strategy,
                    clean_remote_after_pull)
     end
@@ -162,7 +170,8 @@ end
 """
     BridgeConfig
 
-Top-level immutable configuration for SshDataBridge.
+Complete configuration: global transport options, push and pull parameters, and the
+non-empty list of targets.
 """
 struct BridgeConfig
     globals::GlobalOptions
@@ -184,7 +193,16 @@ end
 """
     ProbeResult
 
-Structured diagnostic telemetry returned by pre-flight node connectivity checks.
+Outcome of a pre-flight probe of one target.
+
+# Fields
+- `target::BridgeTarget`: The probed target.
+- `success::Bool`: SSH reachable and `rsync` present on the remote host.
+- `ssh_ok::Bool`: The probe command exited with status zero.
+- `rsync_ok::Bool`: `rsync` is installed on the remote host.
+- `remote_dir_exists::Bool`: The base directory exists.
+- `remote_output_dir_exists::Bool`: The output directory exists.
+- `message::String`: Human-readable diagnostics.
 """
 struct ProbeResult
     target::BridgeTarget
@@ -199,7 +217,15 @@ end
 """
     TransferResult
 
-Structured outcome report returned after executing an asynchronous push or pull action.
+Outcome of a push, pull, or clean action on one target.
+
+# Fields
+- `target::BridgeTarget`: The affected target.
+- `action::Symbol`: `:push`, `:pull`, or `:clean`.
+- `success::Bool`: Whether the action completed with exit status zero.
+- `exit_code::Int`: Exit status of the underlying process; `-1` when it could not be spawned.
+- `duration_seconds::Float64`: Wall-clock duration.
+- `message::String`: Human-readable outcome; never contains credentials.
 """
 struct TransferResult
     target::BridgeTarget

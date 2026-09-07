@@ -18,10 +18,7 @@ function parse_config(dict::AbstractDict{String, Any};
     # Resolve relative paths against configuration directory
     resolved_source = isabspath(local_source) ? local_source :
                       normpath(joinpath(config_dir, local_source))
-    push_excludes_raw = get(push_raw,
-                            "excludes",
-                            Any[".git", ".github", ".vscode", "*.swp", "*~", "data/output",
-                                "harvested_results"])
+    push_excludes_raw = get(push_raw, "excludes", DEFAULT_PUSH_EXCLUDES)
     push_excludes = String[String(strip(string(e))) for e in push_excludes_raw]
     require_clean_git = get(push_raw, "require_clean_git", false)
     use_gitignore = get(push_raw, "use_gitignore", true)
@@ -36,7 +33,7 @@ function parse_config(dict::AbstractDict{String, Any};
     default_output_subdir = get(pull_raw, "output_subdir", "output")
     pull_includes_raw = get(pull_raw, "includes", Any[])
     pull_includes = String[String(strip(string(i))) for i in pull_includes_raw]
-    pull_excludes_raw = get(pull_raw, "excludes", Any["*.tmp", "core.*", "*~"])
+    pull_excludes_raw = get(pull_raw, "excludes", DEFAULT_PULL_EXCLUDES)
     pull_excludes = String[String(strip(string(e))) for e in pull_excludes_raw]
     collision_strategy_raw = Symbol(get(pull_raw, "collision_strategy", "resume"))
     clean_remote_after_pull = get(pull_raw, "clean_remote_after_pull", false)

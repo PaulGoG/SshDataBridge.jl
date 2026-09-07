@@ -75,8 +75,8 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
     end
 
     @testset "Field Validation & Boundary Handling" begin
-        t = BridgeTarget("Node-01", "192.168.1.50", 22, "admin", "secret", "/opt/sims",
-                         "results", "accept-new")
+        t = BridgeTarget("Node-01", "192.168.1.50", 22, "admin", "secret", "/opt/sims/",
+                         "results/", "accept-new")
         @test t.name == "Node-01"
         @test t.host == "192.168.1.50"
         @test t.port == 22
@@ -90,27 +90,47 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
         @test t_default.output_subdir == "output"
         @test t_default.strict_host_key_checking === nothing
 
-        @test_throws ArgumentError BridgeTarget("", "192.168.1.50", 22, "admin", "pass",
-                                                "/dir")
-        @test_throws ArgumentError BridgeTarget("N1", "", 22, "admin", "pass", "/dir")
-        @test_throws ArgumentError BridgeTarget("N1", "192.168.1.1 0", 22, "admin", "pass",
-                                                "/dir")
-        @test_throws ArgumentError BridgeTarget("N1", "192.168.1.50", 0, "admin", "pass",
-                                                "/dir")
-        @test_throws ArgumentError BridgeTarget("N1", "192.168.1.50", 70000, "admin",
-                                                "pass", "/dir")
-        @test_throws ArgumentError BridgeTarget("N1", "192.168.1.50", 22, "", "pass",
-                                                "/dir")
-        @test_throws ArgumentError BridgeTarget("N1", "192.168.1.50", 22, "admin user",
-                                                "pass", "/dir")
-        @test_throws ArgumentError BridgeTarget("N1", "192.168.1.50", 22, "admin", "",
-                                                "/dir")
-        @test_throws ArgumentError BridgeTarget("N1", "192.168.1.50", 22, "admin", "pass",
-                                                "")
-        @test_throws ArgumentError BridgeTarget("N1", "192.168.1.50", 22, "admin", "pass",
-                                                "/dir", "")
-        @test_throws ArgumentError BridgeTarget("N1", "192.168.1.50", 22, "admin", "pass",
-                                                "/dir", "out", "invalid_policy")
+        for host in ("localhost", "node01.cluster.local", "10.0.0.1", "::1",
+                     "2001:db8::10", "[2001:db8::10]", "a-b.example.org.")
+            @test BridgeTarget("N", host, 22, "u", "p", "/d/e").host == host
+        end
+
+        function valid_target(; name="N1", host="192.168.1.50", port=22, user="admin",
+                              password="pass", remote_dir="/dir/sub", output_subdir="out",
+                              policy=nothing)
+            return BridgeTarget(name, host, port, user, password, remote_dir,
+                                output_subdir, policy)
+        end
+        @test valid_target() isa BridgeTarget
+        for name in ("", "-lead", "bad/name", "..", "a b", "x"^65)
+            @test_throws ArgumentError valid_target(; name=name)
+        end
+        for host in ("", "192.168.1.1 0", "-bad.example", "a..b", "host_name", "x"^254,
+                     "bad;rm -rf /", "\$(id)")
+            @test_throws ArgumentError valid_target(; host=host)
+        end
+        @test_throws ArgumentError valid_target(; port=0)
+        @test_throws ArgumentError valid_target(; port=70000)
+        for user in ("", "admin user", "-x", "a@b", "x"^33, "u;id")
+            @test_throws ArgumentError valid_target(; user=user)
+        end
+        @test_throws ArgumentError valid_target(; password="")
+        @test_throws ArgumentError valid_target(; password="pa\nss")
+        password_error = try
+            valid_target(; password="top\tsecret")
+            nothing
+        catch err
+            err
+        end
+        @test password_error isa ArgumentError
+        @test !occursin("secret", sprint(showerror, password_error))
+        for dir in ("", "rel/dir", "/", "//", "/a/../b", "/a\nb")
+            @test_throws ArgumentError valid_target(; remote_dir=dir)
+        end
+        for sub in ("", "/abs", "../up", "a/../b", "a\tb")
+            @test_throws ArgumentError valid_target(; output_subdir=sub)
+        end
+        @test_throws ArgumentError valid_target(; policy="invalid_policy")
 
         g_valid = GlobalOptions(15, "yes", true, 5000)
         @test g_valid.connect_timeout == 15
@@ -126,7 +146,11 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
         @test p_valid.excludes == ["*.tmp"]
         @test p_valid.require_clean_git == true
         @test p_valid.use_gitignore == true
+        @test PushOptions("/x").excludes == SshDataBridge.DEFAULT_PUSH_EXCLUDES
         @test_throws ArgumentError PushOptions("")
+        @test_throws ArgumentError PushOptions("/x", [""])
+        @test_throws ArgumentError PushOptions("/x", ["a\nb"])
+        @test_throws ArgumentError PushOptions("/x", Any[1])
 
         pull_valid = PullOptions("/local/dest", "output_dir", ["*.csv"], ["*.tmp"],
                                  :backup, true)
@@ -136,21 +160,27 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
         @test pull_valid.excludes == ["*.tmp"]
         @test pull_valid.collision_strategy == :backup
         @test pull_valid.clean_remote_after_pull == true
+        @test PullOptions("/x").excludes == SshDataBridge.DEFAULT_PULL_EXCLUDES
+        @test PullOptions("/x", "out/").output_subdir == "out"
         @test_throws ArgumentError PullOptions("")
         @test_throws ArgumentError PullOptions("/local/dest", "")
+        @test_throws ArgumentError PullOptions("/local/dest", "/abs")
+        @test_throws ArgumentError PullOptions("/local/dest", "../up")
         @test_throws ArgumentError PullOptions("/local/dest", "output", String[],
                                                String[], :invalid_strategy)
+        @test_throws ArgumentError PullOptions("/local/dest", "output", [""])
 
-        @test validate_remote_path_safety("/home/user/campaigns/sim01", "user") === nothing
-        @test validate_remote_path_safety("/scratch/worker/batch1", "worker") === nothing
-        @test_throws ArgumentError validate_remote_path_safety("", "user")
-        @test_throws ArgumentError validate_remote_path_safety("/", "user")
-        @test_throws ArgumentError validate_remote_path_safety("/root", "user")
-        @test_throws ArgumentError validate_remote_path_safety("/home", "user")
-        @test_throws ArgumentError validate_remote_path_safety("/home/user", "user")
-        @test_throws ArgumentError validate_remote_path_safety("/home/user/", "user")
-        @test_throws ArgumentError validate_remote_path_safety("~", "user")
-        @test_throws ArgumentError validate_remote_path_safety("/single", "user")
+        for path in ("/home/user/campaigns/sim01", "/scratch/worker/batch1",
+                     "/data/sims/run1", "/tmp/campaign", "/mnt/data/x", "/home/user/x")
+            @test validate_remote_path_safety(path, "user") === nothing
+        end
+        for path in ("", "/", "//", "/root", "/home", "/home/user", "/home/user/", "~",
+                     "relative/path", "/single", "/usr/lib", "/etc/ssh", "/var/lib/x",
+                     "/opt/x", "/home/user/../other/y", "/a/b\n")
+            @test_throws ArgumentError validate_remote_path_safety(path, "user")
+        end
+
+        @test occursin("git", sprint(showerror, MissingBinaryError(["git"])))
     end
 
     @testset "TOML Configuration Ingestion" begin
@@ -467,7 +497,14 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
 
         mktempdir() do empty_dir
             withenv("PATH" => empty_dir) do
-                @test_throws ErrorException check_local_binaries()
+                @test_throws MissingBinaryError check_local_binaries()
+                missing_error = try
+                    check_local_binaries()
+                    nothing
+                catch err
+                    err
+                end
+                @test occursin("ssh, sshpass, rsync", sprint(showerror, missing_error))
             end
         end
     end
