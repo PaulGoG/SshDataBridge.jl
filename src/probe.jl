@@ -3,17 +3,14 @@ const REQUIRED_LOCAL_BINARIES = ("ssh", "sshpass", "rsync")
 """
     check_local_binaries()
 
-Verify that `ssh`, `sshpass`, and `rsync` are available in `PATH`. Throws an
-`ErrorException` naming the missing binaries otherwise.
+Verify that `ssh`, `sshpass`, and `rsync` are available in `PATH`. Throws
+[`MissingBinaryError`](@ref) naming the missing binaries otherwise.
 """
 function check_local_binaries()
     missing_binaries = String[bin
                               for bin in REQUIRED_LOCAL_BINARIES
                               if Sys.which(bin) === nothing]
-    if !isempty(missing_binaries)
-        throw(ErrorException("Missing required local binaries in PATH: $(join(missing_binaries, ", ")). " *
-                             "Install them (Fedora: 'sudo dnf install sshpass rsync openssh-clients')."))
-    end
+    isempty(missing_binaries) || throw(MissingBinaryError(missing_binaries))
     return nothing
 end
 
