@@ -28,6 +28,8 @@ SshDataBridge/
 │   ├── Project.toml         # Formatting environment (JuliaFormatter 2.14+)
 │   ├── activate.jl          # Activates the formatting environment
 │   └── format.jl            # Formats the repository; --check verifies without writing
+├── sandbox/
+│   └── run.jl               # Exercises every action against stub binaries, no network
 ├── scripts/
 │   └── run.jl               # Command-line driver: probe | push | pull | clean
 ├── src/
@@ -99,6 +101,7 @@ julia scripts/run.jl pull --clean-remote --yes          # harvest, then purge th
 julia scripts/run.jl clean --yes                        # purge without harvesting
 julia scripts/run.jl clean --dry-run                    # show what a purge would remove
 julia --project=test test/runtests.jl                   # test suite
+julia sandbox/run.jl                                    # exercise every action safely, no network
 julia format/format.jl                                  # format the sources
 julia format/format.jl --check                          # verify formatting without writing
 ```

@@ -748,4 +748,16 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
             @test !occursin("secret", sprint(show, result))
         end
     end
+
+    @testset "Command-line interface (sandbox)" begin
+        # Exercises scripts/run.jl end to end against stub binaries and a throwaway
+        # configuration: no network, no real host, no real credential.
+        include(joinpath(dirname(@__DIR__), "sandbox", "run.jl"))
+        results = run_sandbox(; verbose=false)
+        @test !isempty(results)
+        for result in results
+            @test result.exitcode == result.expected
+            @test !result.leaked
+        end
+    end
 end
