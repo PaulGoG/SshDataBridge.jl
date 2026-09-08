@@ -1,6 +1,11 @@
 # SshDataBridge.jl
 
-[![CI](https://github.com/PaulGoG/SshDataBridge.jl/actions/workflows/CI.yml/badge.svg)](https://github.com/PaulGoG/SshDataBridge.jl/actions/workflows/CI.yml)
+[![CI](https://img.shields.io/github/actions/workflow/status/PaulGoG/SshDataBridge.jl/CI.yml?branch=main&label=CI&logo=github)](https://github.com/PaulGoG/SshDataBridge.jl/actions/workflows/CI.yml)
+[![Release](https://img.shields.io/github/v/release/PaulGoG/SshDataBridge.jl?label=release)](https://github.com/PaulGoG/SshDataBridge.jl/releases/latest)
+[![License](https://img.shields.io/github/license/PaulGoG/SshDataBridge.jl)](LICENSE)
+[![Julia](https://img.shields.io/badge/Julia-1.10%2B-9558B2?logo=julia&logoColor=white)](https://julialang.org)
+[![Platform](https://img.shields.io/badge/platform-Linux-333333?logo=linux&logoColor=white)](#requirements)
+[![Aqua QA](https://raw.githubusercontent.com/JuliaTesting/Aqua.jl/master/badge.svg)](https://github.com/JuliaTesting/Aqua.jl)
 
 Deployment of a simulation code base to several remote compute nodes and retrieval of their results over SSH and rsync, driven by one TOML file and executed for all nodes in parallel from a single command.
 
@@ -38,6 +43,22 @@ SshDataBridge/
     ├── activate.jl          # Activates the test environment against the local source
     └── runtests.jl          # Static analysis, unit tests, stub-binary process tests
 ```
+
+## How it works
+
+```mermaid
+flowchart LR
+    src["local source tree"]
+    cli["scripts/run.jl"]
+    nodes["remote compute nodes<br/>remote_dir"]
+    harvest["local harvest<br/>one directory per target"]
+    src --> cli
+    cli -->|"push, rsync"| nodes
+    nodes -->|"pull, rsync --partial"| harvest
+    cli -->|"probe and clean, ssh"| nodes
+```
+
+Every action runs on all targets concurrently and reports per target, so one unreachable node does not stop the rest. A purge removes only the output directory unless `purge_scope` says otherwise, and never runs after a harvest narrowed by include patterns. [Actions](#actions) has the details.
 
 ## Requirements
 
