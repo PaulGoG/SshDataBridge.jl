@@ -43,7 +43,7 @@ local_destination_root = "data/harvested_results"  # path relative to this confi
 # Default relative output subdirectory on remotes
 output_subdir = "output"
 
-# Selective retrieval inclusion patterns (empty = all files)
+# Harvest only files matching these patterns (empty = all files); excludes take precedence
 includes = []
 
 # Retrieval exclusion patterns
@@ -63,7 +63,7 @@ clean_remote_after_pull = false  # one of: true | false
 purge_scope = "output"  # one of: "output" | "project"
 
 [[targets]]
-# Unique human-readable label
+# Unique label; names the local harvest directory
 name = "Cluster-Node-01"
 
 # Remote IPv4/IPv6 address or hostname

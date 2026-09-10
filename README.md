@@ -128,14 +128,14 @@ require_clean_git = false             # refuse to deploy from a dirty working tr
 [pull]
 local_destination_root = "data/harvested_results"   # one subdirectory per target name
 output_subdir = "output"              # default remote output directory, relative to remote_dir
-includes = []                         # rsync include patterns; empty = everything
+includes = []                         # harvest only matching files; empty = everything
 excludes = ["*.tmp", "core.*", "*~"]  # rsync exclude patterns
 collision_strategy = "resume"         # one of: "resume" | "backup" | "abort"
 clean_remote_after_pull = false       # purge after a successful harvest (needs --yes)
 purge_scope = "output"                # one of: "output" | "project"
 
 [[targets]]
-name = "Cluster-Node-01"              # letters, digits, '.', '_', '-'; names the local harvest directory
+name = "Cluster-Node-01"              # unique; letters, digits, '.', '_', '-'; names the local harvest directory
 host = "192.168.1.100"                # hostname, IPv4, or IPv6 literal
 port = 22                             # integer in [1, 65535]
 user = "scientist"
@@ -149,9 +149,9 @@ strict_host_key_checking = "accept-new"   # optional override
 
 **probe** runs a short shell script on every target over ssh and reports whether the host answered, whether `rsync` is installed there, and whether the base and output directories exist. Nothing is modified.
 
-**push** creates `remote_dir` if needed and runs `rsync -av --partial` from `local_source_dir` to it. With `use_gitignore` the `.gitignore` rules of the source tree are applied through a dir-merge filter, so data, plots, and build products of the deployed project stay local without duplicating the rules in `excludes`. Files removed locally are not removed remotely, because `--delete` is deliberately not used. With `require_clean_git` the source tree must be a git working tree without uncommitted changes; the check also applies to dry runs.
+**push** creates `remote_dir` if needed and runs `rsync -av --partial` from `local_source_dir`, which must exist, to it. With `use_gitignore` the `.gitignore` rules of the source tree are applied through a dir-merge filter, so data, plots, and build products of the deployed project stay local without duplicating the rules in `excludes`. Files removed locally are not removed remotely, because `--delete` is deliberately not used. With `require_clean_git` the source tree must be a git working tree without uncommitted changes; the check also applies to dry runs.
 
-**pull** retrieves `remote_dir/output_subdir/` of every target into `local_destination_root/<name>/`. `--partial` resumes interrupted transfers. When the local directory already exists, `collision_strategy` decides: `resume` reuses it, `backup` renames it to `<name>#1`, `<name>#2`, ... before creating a fresh one, `abort` fails the target.
+**pull** retrieves `remote_dir/output_subdir/` of every target into `local_destination_root/<name>/`. `--partial` resumes interrupted transfers. With `includes` set, only files matching one of the patterns are harvested and directories left empty are skipped; `excludes` take precedence over `includes`. When the local directory already exists, `collision_strategy` decides: `resume` reuses it, `backup` renames it to `<name>#1`, `<name>#2`, ... before creating a fresh one, `abort` fails the target. A destination that cannot be created fails that target only.
 
 **clean** removes the directory selected by `purge_scope` with `rm -rf`: the output directory by default, the whole `remote_dir` with `"project"`. The same purge runs after a successful pull when `--clean-remote` is given or `clean_remote_after_pull` is set. Every purge outside a dry run requires `--yes` on the command line. The path is validated first: it must be absolute, at least two components deep, free of `..`, and neither `/`, `/root`, `/home`, the user's home directory, nor anything under `/usr`, `/etc`, `/var`, and the other system directories. A purge is never issued after a harvest narrowed by `includes`, because files the filter left behind would be lost.
 

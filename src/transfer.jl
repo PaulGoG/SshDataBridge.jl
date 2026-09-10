@@ -55,23 +55,39 @@ function build_push_command(target::BridgeTarget, globals::GlobalOptions,
 end
 
 """
+    pull_filter_arguments(pull_opts::PullOptions)::Vector{String}
+
+`rsync` filter rules of a harvest. Exclude patterns come first and therefore take
+precedence. When include patterns are given, the harvest is narrowed to files matching
+one of them: every directory is entered (`--include=*/`), the include patterns follow, a
+final `--exclude=*` drops everything else, and `--prune-empty-dirs` omits directories
+left without files. Include rules alone would not narrow anything, because `rsync`
+transfers every file that no rule excludes.
+"""
+function pull_filter_arguments(pull_opts::PullOptions)::Vector{String}
+    args = String["--exclude=$(pattern)" for pattern in pull_opts.excludes]
+    isempty(pull_opts.includes) && return args
+    push!(args, "--include=*/")
+    for pattern in pull_opts.includes
+        push!(args, "--include=$(pattern)")
+    end
+    push!(args, "--exclude=*", "--prune-empty-dirs")
+    return args
+end
+
+"""
     build_pull_command(target::BridgeTarget, globals::GlobalOptions,
                        pull_opts::PullOptions, local_target_dir::AbstractString)::Cmd
 
 Construct the `rsync` invocation that retrieves the remote output directory of `target`
-into `local_target_dir`. The password is not part of the command;
-[`run_authenticated`](@ref) supplies it.
+into `local_target_dir`, with the filter rules of [`pull_filter_arguments`](@ref). The
+password is not part of the command; [`run_authenticated`](@ref) supplies it.
 """
 function build_pull_command(target::BridgeTarget, globals::GlobalOptions,
                             pull_opts::PullOptions, local_target_dir::AbstractString)::Cmd
     args = rsync_base_arguments(globals)
     push!(args, "-e", build_ssh_rsh_string(target, globals))
-    for pattern in pull_opts.includes
-        push!(args, "--include=$(pattern)")
-    end
-    for pattern in pull_opts.excludes
-        push!(args, "--exclude=$(pattern)")
-    end
+    append!(args, pull_filter_arguments(pull_opts))
     source = "$(target.user)@$(rsync_host(target.host)):$(remote_output_directory(target))/"
     destination = endswith(local_target_dir, '/') ? String(local_target_dir) :
                   local_target_dir * "/"
@@ -154,7 +170,8 @@ Harvest the remote output directory of a single target. When `clean_remote` is `
 `nothing` and `config.pull.clean_remote_after_pull` is set, the directory selected by
 `config.pull.purge_scope` is purged after a successful transfer. The purge is skipped, and
 the reason reported, when `config.pull.includes` narrows the harvest, because files left
-unharvested by the filter would otherwise be destroyed.
+unharvested by the filter would otherwise be destroyed. A local destination that cannot
+be prepared (collision refusal or file-system error) is reported as a failed result.
 """
 function pull_target(target::BridgeTarget, config::BridgeConfig; dry_run::Bool=false,
                      clean_remote::Union{Bool, Nothing}=nothing)::TransferResult
@@ -181,7 +198,7 @@ function pull_target(target::BridgeTarget, config::BridgeConfig; dry_run::Bool=f
     dest_dir = try
         prepare_local_pull_directory(target, config.pull)
     catch err
-        err isa ErrorException || rethrow()
+        err isa Union{ErrorException, Base.IOError} || rethrow()
         return TransferResult(target, :pull, false, -1, time() - t_start,
                               "Destination refusal: $(sprint(showerror, err))")
     end
@@ -241,13 +258,16 @@ end
 """
     push_all_targets(config::BridgeConfig; dry_run::Bool=false)::Vector{TransferResult}
 
-Deploy the local source tree to all configured targets concurrently. When
-`config.push.require_clean_git` is set, the source tree must be a clean git working tree;
-the check also runs in dry-run mode.
+Deploy the local source tree to all configured targets concurrently. The source tree
+must exist, otherwise `ArgumentError` is thrown; when `config.push.require_clean_git` is
+set, it must also be a clean git working tree. Both checks run in dry-run mode as well.
 """
 function push_all_targets(config::BridgeConfig;
                           dry_run::Bool=false)::Vector{TransferResult}
     dry_run || check_local_binaries()
+    if !isdir(config.push.local_source_dir)
+        throw(ArgumentError("Push parameter 'local_source_dir' is not an existing directory: '$(config.push.local_source_dir)'."))
+    end
     config.push.require_clean_git && assert_clean_git_tree(config.push.local_source_dir)
     @info "Dispatching parallel push deployment" total_targets = length(config.targets) source = config.push.local_source_dir dry_run = dry_run
     tasks = map(config.targets) do target

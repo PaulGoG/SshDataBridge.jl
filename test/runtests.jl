@@ -270,6 +270,24 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
 
         @test_throws ArgumentError parse_config(Dict{String, Any}("globals" => Dict()))
         @test_throws ArgumentError parse_config(Dict{String, Any}("targets" => Any[]))
+
+        # Target names must be unique because they name the local harvest directories
+        twin(name) = Dict{String, Any}("name" => name, "host" => "10.0.0.1", "user" => "u",
+                                       "password" => "p", "remote_dir" => "/a/b")
+        duplicate_error = try
+            parse_config(Dict{String, Any}("targets" => Any[twin("Node"), twin("Other"),
+                                                            twin("Node")]))
+            nothing
+        catch err
+            err
+        end
+        @test duplicate_error isa ArgumentError
+        @test occursin("duplicated: Node.", sprint(showerror, duplicate_error))
+        @test parse_config(Dict{String, Any}("targets" => Any[twin("Node"), twin("Other")])) isa
+              BridgeConfig
+        same = BridgeTarget("Node", "10.0.0.1", 22, "u", "p", "/a/b")
+        @test_throws ArgumentError BridgeConfig(GlobalOptions(), PushOptions("/x"),
+                                                PullOptions("/y"), [same, same])
         @test_throws ArgumentError parse_config(Dict{String, Any}("pull" =>
                                                                       Dict{String, Any}("purge_scope" => "everything"),
                                                                   "targets" =>
@@ -459,10 +477,49 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
                                       "/local/harvest/RTX-Node")
         @test pull_cmd.exec[1:4] == ["sshpass", "-d", "0", "rsync"]
         @test pull_cmd.env === nothing
-        @test "--include=*.csv" in pull_cmd.exec
-        @test "--exclude=*.tmp" in pull_cmd.exec
         @test pull_cmd.exec[end - 1] == "worker@10.0.0.5:/srv/sim_01/results/"
         @test pull_cmd.exec[end] == "/local/harvest/RTX-Node/"
+
+        # Include patterns narrow the harvest: excludes first, then the directory rule,
+        # the includes, and a final catch-all exclude; empty directories are pruned.
+        @test SshDataBridge.pull_filter_arguments(pull_opts_resume) ==
+              ["--exclude=*.tmp", "--include=*/", "--include=*.csv", "--exclude=*",
+               "--prune-empty-dirs"]
+        unfiltered = PullOptions("/local/harvest", "output", String[], ["*.tmp", "core.*"])
+        @test SshDataBridge.pull_filter_arguments(unfiltered) ==
+              ["--exclude=*.tmp", "--exclude=core.*"]
+        @test SshDataBridge.pull_filter_arguments(PullOptions("/local/harvest", "output",
+                                                              String[], String[])) ==
+              String[]
+
+        if Sys.which("rsync") === nothing
+            @warn "rsync is not available; skipping the harvest narrowing check"
+        else
+            mktempdir() do dir
+                source = joinpath(dir, "source")
+                mkpath(joinpath(source, "nested"))
+                mkpath(joinpath(source, "empty"))
+                for name in ("a.csv", "b.txt", "c.tmp", joinpath("nested", "d.csv"),
+                             joinpath("nested", "e.txt"))
+                    write(joinpath(source, name), name)
+                end
+                harvested = String[]
+                for (opts, expected) in ((pull_opts_resume, ["a.csv", "nested/d.csv"]),
+                                         (unfiltered,
+                                          ["a.csv", "b.txt", "nested/d.csv",
+                                           "nested/e.txt"]))
+                    destination = mktempdir(dir)
+                    filters = SshDataBridge.pull_filter_arguments(opts)
+                    run(pipeline(`rsync -a $(filters) $(source)/ $(destination)/`;
+                                 stdout=devnull))
+                    empty!(harvested)
+                    for (root, _, files) in walkdir(destination), file in files
+                        push!(harvested, relpath(joinpath(root, file), destination))
+                    end
+                    @test sort(harvested) == expected
+                end
+            end
+        end
 
         # IPv6 literals are bracketed for rsync endpoints only
         ipv6_target = BridgeTarget("V6", "2001:db8::10", 22, "worker", "pw", "/srv/sim")
@@ -549,7 +606,7 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
 
     @testset "Process Execution (stub binaries)" begin
         globals = GlobalOptions(10, "accept-new", false, 0)
-        push_opts = PushOptions("/local/src", String[".git"], false)
+        push_opts = PushOptions(mktempdir(), String[".git"], false)
         target = BridgeTarget("Node-A", "10.0.0.1", 22, "admin", "pw-A", "/rem/sim a")
 
         with_stub_binaries(; stdout_text="RSYNC_OK\nDIR_EXISTS\nOUT_MISSING") do args_file
@@ -619,12 +676,36 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
                 @test results[1].exit_code == 0
             end
 
+            # A source tree that does not exist is refused before any target is contacted
+            absent_config = BridgeConfig(globals,
+                                         PushOptions(joinpath(harvest_root, "absent")),
+                                         pull_opts, [target])
+            with_stub_binaries() do args_file
+                @test_throws ArgumentError push_all_targets(absent_config)
+                @test_throws ArgumentError push_all_targets(absent_config; dry_run=true)
+                @test isempty(recorded_invocations(args_file))
+            end
+
             with_stub_binaries(; exit_code=255, stderr_text="timed out") do _
                 result = pull_target(target, config)
                 @test !result.success
                 @test result.exit_code == 255
                 @test occursin("timed out", result.message)
                 @test isdir(joinpath(harvest_root, "Node-A"))
+            end
+
+            # A local destination that cannot be created fails the target, not the run
+            blocker = joinpath(harvest_root, "blocker")
+            write(blocker, "not a directory")
+            blocked_config = BridgeConfig(globals, push_opts,
+                                          PullOptions(joinpath(blocker, "root")), [target])
+            with_stub_binaries() do args_file
+                result = pull_target(target, blocked_config)
+                @test !result.success
+                @test result.exit_code == -1
+                @test occursin("Destination refusal", result.message)
+                @test isempty(recorded_invocations(args_file))
+                @test only(pull_all_targets(blocked_config)).success == false
             end
 
             with_stub_binaries() do args_file
@@ -702,7 +783,7 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
 
     @testset "Dry-Run Dispatch" begin
         globals = GlobalOptions(10, "accept-new", true, 0)
-        push_opts = PushOptions("/local/src", String[".git"], false)
+        push_opts = PushOptions(mktempdir(), String[".git"], false)
         pull_opts = PullOptions("/local/dst", "output", String[], String[], :resume, true)
         target1 = BridgeTarget("Node-A", "10.0.0.1", 22, "admin", "p1-secret", "/rem/sim_a")
         target2 = BridgeTarget("Node-B", "10.0.0.2", 22, "admin", "p2-secret", "/rem/sim_b")

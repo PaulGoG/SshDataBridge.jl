@@ -196,7 +196,9 @@ end
     BridgeConfig
 
 Complete configuration: global transport options, push and pull parameters, and the
-non-empty list of targets.
+non-empty list of targets. Target names must be unique, because each one names the
+local harvest directory of its target and two targets harvested concurrently into the
+same directory would overwrite each other's results.
 """
 struct BridgeConfig
     globals::GlobalOptions
@@ -210,6 +212,11 @@ struct BridgeConfig
                           targets::AbstractVector{BridgeTarget})
         if isempty(targets)
             throw(ArgumentError("BridgeConfig must contain at least one configured BridgeTarget."))
+        end
+        names = String[t.name for t in targets]
+        duplicated = unique!(String[n for n in names if count(==(n), names) > 1])
+        if !isempty(duplicated)
+            throw(ArgumentError("Target names must be unique because each names a local harvest directory; duplicated: $(join(duplicated, ", "))."))
         end
         return new(globals, push, pull, Vector{BridgeTarget}(targets))
     end
