@@ -758,6 +758,7 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
         for result in results
             @test result.exitcode == result.expected
             @test !result.leaked
+            @test isempty(result.missing_fragments)
         end
     end
 end

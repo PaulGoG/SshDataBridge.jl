@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+### Changed
+
+- The sandbox asserts the content of the summary tables, covers unreachable nodes, drains the password deterministically, and reports the probe markers only when impersonating `ssh`.
+
 ## [0.1.0] - 2026-09-08
 
 ### Added
