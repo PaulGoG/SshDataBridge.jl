@@ -1,5 +1,6 @@
 module SshDataBridge
 
+using Logging: ConsoleLogger, with_logger
 using TOML: TOML
 
 include("validation.jl")
@@ -8,6 +9,7 @@ include("process.jl")
 include("config.jl")
 include("probe.jl")
 include("transfer.jl")
+include("cli.jl")
 
 export BridgeTarget,
        GlobalOptions,

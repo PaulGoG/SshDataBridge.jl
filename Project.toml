@@ -5,8 +5,10 @@ version = "0.1.0"
 license = "MIT"
 
 [deps]
+Logging = "56ddb016-857b-54e1-b83d-db4d58db5568"
 TOML = "fa267f1f-6049-4f14-aa54-33bafae1ed76"
 
 [compat]
+Logging = "1"
 TOML = "1"
 julia = "1.10"

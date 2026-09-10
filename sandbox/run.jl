@@ -11,8 +11,17 @@ safe way to confirm that the tool still behaves after a change. Run it directly:
 julia sandbox/run.jl
 ```
 
-The test suite includes this file and asserts the same expectations.
+The driver is called in process through `SshDataBridge.main`; one scenario spawns
+`scripts/run.jl` in a separate Julia process to verify the script wrapper as well. The
+test suite includes this file and asserts the same expectations.
 """
+
+if abspath(PROGRAM_FILE) == @__FILE__
+    using Pkg
+    Pkg.activate(dirname(@__DIR__); io=devnull)
+    Pkg.instantiate(; io=devnull)
+end
+using SshDataBridge
 
 const REPOSITORY_ROOT = dirname(@__DIR__)
 const DRIVER = joinpath(REPOSITORY_ROOT, "scripts", "run.jl")
@@ -104,19 +113,25 @@ function with_sandbox(f)
 end
 
 """
-    invoke_driver(arguments, config_path; exit_code = 0)
+    invoke_driver(arguments, config_path; exit_code = 0, spawn = false)
 
-Run the driver script with `arguments` against `config_path`, capturing both streams,
-with the stub binaries exiting with `exit_code`. Returns `(; exitcode, output)`.
+Run the driver with `arguments` against `config_path` while the stub binaries exit with
+`exit_code`, capturing both streams. The call is made in process through
+`SshDataBridge.main`; with `spawn = true` a separate Julia process runs `scripts/run.jl`
+instead, which verifies the script wrapper itself. Returns `(; exitcode, output)`.
 """
 function invoke_driver(arguments::Vector{String}, config_path::AbstractString;
-                       exit_code::Integer=0)
+                       exit_code::Integer=0, spawn::Bool=false)
     buffer = IOBuffer()
-    command = `$(Base.julia_cmd()) --startup-file=no $(DRIVER) $(arguments) --config $(config_path)`
-    process = withenv("STUB_EXIT_CODE" => string(exit_code)) do
-        return run(pipeline(ignorestatus(command); stdout=buffer, stderr=buffer))
+    full_arguments = vcat(arguments, ["--config", String(config_path)])
+    exitcode = withenv("STUB_EXIT_CODE" => string(exit_code)) do
+        if spawn
+            command = `$(Base.julia_cmd()) --startup-file=no $(DRIVER) $(full_arguments)`
+            return run(pipeline(ignorestatus(command); stdout=buffer, stderr=buffer)).exitcode
+        end
+        return SshDataBridge.main(full_arguments; io=buffer, err=buffer)
     end
-    return (; exitcode=process.exitcode, output=String(take!(buffer)))
+    return (; exitcode, output=String(take!(buffer)))
 end
 
 """
@@ -124,45 +139,46 @@ end
 
 Each entry gives the arguments, the exit status of the stub binaries, the expected exit
 status of the driver, fragments (strings or regular expressions) that the output must
-contain, and what the scenario demonstrates.
+contain, whether to spawn `scripts/run.jl` instead of calling `main` in process, and what
+the scenario demonstrates.
 """
 const SCENARIOS = [(; arguments=["probe"], stub_exit=0, expected=0,
                     fragments=[r"SSH reachable:\s+YES", r"Remote rsync:\s+YES",
-                               "All remote diagnostics passed."],
+                               "All remote diagnostics passed."], spawn=false,
                     description="probe reports both stub nodes healthy"),
                    (; arguments=["push", "--dry-run"], stub_exit=0, expected=0,
                     fragments=["Dry run: sshpass -d 0 rsync", "Succeeded: 2 | Failed: 0"],
-                    description="push prints its rsync command"),
+                    spawn=false, description="push prints its rsync command"),
                    (; arguments=["pull", "--dry-run"], stub_exit=0, expected=0,
                     fragments=["Dry run: sshpass -d 0 rsync", "Succeeded: 2 | Failed: 0"],
-                    description="pull prints its rsync command"),
+                    spawn=false, description="pull prints its rsync command"),
                    (; arguments=["clean", "--dry-run"], stub_exit=0, expected=0,
                     fragments=["Dry run: sshpass -d 0 ssh -n",
                                "rm -rf -- /home/researcher/campaigns/sandbox/data"],
-                    description="clean previews the removal"),
+                    spawn=false, description="clean previews the removal"),
                    (; arguments=["clean"], stub_exit=0, expected=1,
-                    fragments=["re-run with --yes"],
+                    fragments=["re-run with --yes"], spawn=false,
                     description="clean refuses to delete without --yes"),
                    (; arguments=["clean", "--yes"], stub_exit=0, expected=0,
-                    fragments=["purged in", "Succeeded: 2 | Failed: 0"],
+                    fragments=["purged in", "Succeeded: 2 | Failed: 0"], spawn=false,
                     description="clean proceeds once confirmed"),
                    (; arguments=["push"], stub_exit=0, expected=0,
                     fragments=["Deployed successfully", "Succeeded: 2 | Failed: 0"],
-                    description="push completes against the stubs"),
+                    spawn=false, description="push completes against the stubs"),
                    (; arguments=["pull"], stub_exit=0, expected=0,
                     fragments=["Harvested successfully", "Succeeded: 2 | Failed: 0"],
-                    description="pull completes against the stubs"),
-                   (; arguments=["probe"], stub_exit=255, expected=2,
-                    fragments=[r"SSH reachable:\s+NO", "ssh exited with code 255",
-                               "connection refused"],
-                    description="probe reports unreachable nodes and exits 2"),
+                    spawn=false, description="pull completes against the stubs"),
                    (; arguments=["push"], stub_exit=255, expected=2,
                     fragments=["Remote directory creation failed",
-                               "Succeeded: 0 | Failed: 2"],
+                               "Succeeded: 0 | Failed: 2"], spawn=false,
                     description="push reports every failed node and exits 2"),
                    (; arguments=["nonsense"], stub_exit=0, expected=1,
-                    fragments=["unknown action"],
-                    description="an unknown action is rejected")]
+                    fragments=["unknown action"], spawn=false,
+                    description="an unknown action is rejected"),
+                   (; arguments=["probe"], stub_exit=255, expected=2,
+                    fragments=[r"SSH reachable:\s+NO", "ssh exited with code 255",
+                               "connection refused"], spawn=true,
+                    description="scripts/run.jl forwards the arguments and the exit status")]
 
 """
     run_sandbox(; io = stdout, verbose = true)
@@ -177,7 +193,7 @@ function run_sandbox(; io::IO=stdout, verbose::Bool=true)
         results = NamedTuple[]
         for scenario in SCENARIOS
             outcome = invoke_driver(scenario.arguments, config_path;
-                                    exit_code=scenario.stub_exit)
+                                    exit_code=scenario.stub_exit, spawn=scenario.spawn)
             leaked = occursin(SANDBOX_PASSWORD, outcome.output)
             missing_fragments = [string(fragment)
                                  for fragment in scenario.fragments

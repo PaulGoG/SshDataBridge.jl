@@ -14,6 +14,8 @@ All notable changes to this project are documented in this file. The format foll
 - Duplicated target names are rejected when the configuration is loaded, because two targets with the same name would harvest concurrently into the same local directory.
 - `push` refuses to start, in dry runs as well, when `local_source_dir` does not exist, instead of reporting an `rsync` failure for every target.
 - The sandbox asserts the content of the summary tables, covers unreachable nodes, drains the password deterministically, and reports the probe markers only when impersonating `ssh`.
+- The command-line driver moved from `scripts/run.jl` into the package as `SshDataBridge.main(args; io, err)`, which returns the exit status instead of calling `exit` and takes its output streams as arguments; the script is a thin wrapper. The sandbox and the test suite call the driver in process, so the suite no longer spawns one Julia process per scenario.
+- The test environment consumes the package through a relative `[sources]` entry, which Julia 1.11 and later read directly; `test/activate.jl` still develops the package on Julia 1.10.
 
 ## [0.1.0] - 2026-09-08
 

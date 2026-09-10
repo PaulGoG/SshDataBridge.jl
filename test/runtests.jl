@@ -830,6 +830,38 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
         end
     end
 
+    @testset "Command-line driver" begin
+        parse = SshDataBridge.parse_arguments
+        @test parse(String[]).action == :help
+        @test parse(["push", "--help"]).action == :help
+        @test parse(["-h"]).action == :help
+        options = parse(["PULL", "--config", "/cfg/x.toml", "--dry-run", "--clean-remote",
+                         "--yes"])
+        @test options.action == :pull
+        @test options.config_path == "/cfg/x.toml"
+        @test options.dry_run && options.clean_remote && options.confirmed
+        defaults = parse(["probe"]; default_config="/cfg/default.toml")
+        @test defaults.config_path == "/cfg/default.toml"
+        @test !(defaults.dry_run || defaults.clean_remote || defaults.confirmed)
+        @test_throws ArgumentError parse(["nonsense"])
+        @test_throws ArgumentError parse(["probe", "--bogus"])
+        @test_throws ArgumentError parse(["probe", "--config"])
+        @test endswith(SshDataBridge.default_config_path(), "config.toml")
+
+        # main returns the status instead of exiting and writes to the given streams
+        io = IOBuffer()
+        err = IOBuffer()
+        @test SshDataBridge.main(String[]; io=io, err=err) == 0
+        @test occursin("Usage:", String(take!(io)))
+        @test isempty(take!(err))
+        @test SshDataBridge.main(["clean", "--config", "/nonexistent/config.toml"]; io=io,
+                                 err=err) == 1
+        @test isempty(take!(io))
+        @test occursin("configuration file not found", String(take!(err)))
+        @test SshDataBridge.main(["probe", "--bogus"]; io=io, err=err) == 1
+        @test occursin("unrecognized option '--bogus'", String(take!(err)))
+    end
+
     @testset "Command-line interface (sandbox)" begin
         # Exercises scripts/run.jl end to end against stub binaries and a throwaway
         # configuration: no network, no real host, no real credential.

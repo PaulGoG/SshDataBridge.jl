@@ -19,7 +19,7 @@ SshDataBridge/
 ├── .JuliaFormatter.toml     # YAS style, 92 columns
 ├── CHANGELOG.md             # Release history
 ├── LICENSE                  # MIT
-├── Project.toml             # Package metadata; the TOML standard library is the only dependency
+├── Project.toml             # Package metadata; standard-library dependencies only
 ├── README.md
 ├── SECURITY.md              # Threat model and vulnerability reporting
 ├── activate.jl              # Activates and instantiates the root environment
@@ -29,9 +29,9 @@ SshDataBridge/
 │   ├── activate.jl          # Activates the formatting environment
 │   └── format.jl            # Formats the repository; --check verifies without writing
 ├── sandbox/
-│   └── run.jl               # Exercises every action against stub binaries, no network
+│   └── run.jl               # Exercises every action in process against stub binaries, no network
 ├── scripts/
-│   └── run.jl               # Command-line driver: probe | push | pull | clean
+│   └── run.jl               # Thin entry point around SshDataBridge.main
 ├── src/
 │   ├── SshDataBridge.jl     # Module and exports
 │   ├── validation.jl        # Field grammars and remote-path safety rules
@@ -39,7 +39,8 @@ SshDataBridge/
 │   ├── process.jl           # Credential delivery and process execution
 │   ├── config.jl            # Typed TOML parser
 │   ├── probe.jl             # ssh commands: probe, mkdir, purge
-│   └── transfer.jl          # rsync commands: push, pull; clean-tree check
+│   ├── transfer.jl          # rsync commands: push, pull; clean-tree check
+│   └── cli.jl               # Command-line driver: probe | push | pull | clean
 └── test/
     ├── Project.toml         # Test environment: Aqua, JET, ExplicitImports
     ├── activate.jl          # Activates the test environment against the local source
@@ -78,7 +79,7 @@ Clone the repository and use it in place; this is the intended way to run the dr
 ```bash
 git clone https://github.com/PaulGoG/SshDataBridge.jl.git
 cd SshDataBridge.jl
-julia activate.jl          # root environment (standard library only)
+julia activate.jl          # root environment (standard libraries only)
 julia test/activate.jl     # test environment, developed against the local source
 julia format/activate.jl   # formatting environment
 ```
@@ -107,6 +108,13 @@ julia format/format.jl --check                          # verify formatting with
 ```
 
 `--config <path>` selects another configuration file; the default is `config.toml` next to `Project.toml`. The exit status is 0 when every target succeeded, 2 when at least one failed, and 1 on a configuration or precondition error.
+
+The script only activates the environment and calls `SshDataBridge.main(args; io, err)`, which returns that exit status instead of calling `exit` and writes the summary tables to `io` and the diagnostics to `err`. Call it from Julia to drive a campaign from another project or to test a configuration in process:
+
+```julia
+using SshDataBridge
+SshDataBridge.main(["probe", "--config", "config.toml"])
+```
 
 ## Configuration
 
