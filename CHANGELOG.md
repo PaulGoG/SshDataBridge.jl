@@ -4,6 +4,8 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-10
+
 ### Fixed
 
 - `[pull].includes` now narrows the harvest. The include patterns were passed to `rsync` without a closing exclude rule, so every file was still transferred; the filter now enters every directory, keeps the matching files, drops the rest, and prunes directories left empty. Exclude patterns take precedence.
@@ -29,5 +31,6 @@ All notable changes to this project are documented in this file. The format foll
 - Optional clean-git-tree requirement for deployments, evaluated in the configured source directory.
 - Test suite with static analysis (Aqua, JET, ExplicitImports) and a stub-binary harness that exercises the process execution paths without network access; formatting enforced by a dedicated `format/` environment and CI job.
 
-[Unreleased]: https://github.com/PaulGoG/SshDataBridge.jl/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/PaulGoG/SshDataBridge.jl/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/PaulGoG/SshDataBridge.jl/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/PaulGoG/SshDataBridge.jl/releases/tag/v0.1.0
