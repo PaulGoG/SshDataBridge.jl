@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+### Fixed
+
+- `Pkg.test()` passes. The sandbox scenario that spawns `scripts/run.jl` inherited the load path that `Pkg.test` exports, which lacks the standard libraries, so the child could not load `Pkg` and the scenario failed; the spawned driver now starts without `JULIA_LOAD_PATH` and `JULIA_PROJECT`. Running the suite as a script was not affected.
+
 ## [0.2.0] - 2026-09-10
 
 ### Fixed

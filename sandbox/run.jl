@@ -126,7 +126,10 @@ function invoke_driver(arguments::Vector{String}, config_path::AbstractString;
     full_arguments = vcat(arguments, ["--config", String(config_path)])
     exitcode = withenv("STUB_EXIT_CODE" => string(exit_code)) do
         if spawn
-            command = `$(Base.julia_cmd()) --startup-file=no $(DRIVER) $(full_arguments)`
+            # Pkg.test exports a load path without the standard libraries; the driver
+            # activates its own environment and must not inherit it.
+            command = addenv(`$(Base.julia_cmd()) --startup-file=no $(DRIVER) $(full_arguments)`,
+                             "JULIA_LOAD_PATH" => nothing, "JULIA_PROJECT" => nothing)
             return run(pipeline(ignorestatus(command); stdout=buffer, stderr=buffer)).exitcode
         end
         return SshDataBridge.main(full_arguments; io=buffer, err=buffer)
