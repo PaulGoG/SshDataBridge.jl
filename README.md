@@ -59,7 +59,7 @@ julia scripts/run.jl probe                              # reachability, remote r
 julia scripts/run.jl push --dry-run                     # print the rsync commands
 julia scripts/run.jl push                               # deploy to all targets
 julia scripts/run.jl pull                               # harvest all targets
-julia scripts/run.jl pull --clean-remote --yes          # harvest, then purge the remote output directory
+julia scripts/run.jl pull --clean-remote --yes          # harvest, verify, then purge the project from the nodes
 julia scripts/run.jl clean --yes                        # purge without harvesting
 julia scripts/run.jl clean --dry-run                    # show what a purge would remove
 julia test/runtests.jl                                  # test suite
@@ -83,7 +83,7 @@ SshDataBridge.main(["probe", "--config", "config.toml"])
 |---|---|
 | TOML configuration parser and field validation | Stable |
 | `probe`, `push`, `pull` | Stable; covered by process tests against stub binaries |
-| `clean` and the post-harvest purge | Stable; `--yes` gate and path denylist covered by tests |
+| `clean` and the post-harvest purge | Stable; `--yes` gate, path denylist, and harvest verification covered by tests |
 | Credential delivery to `sshpass` over standard input | Stable; redaction asserted by the test suite and the sandbox |
 | `push --delete`, retries, key-based authentication | Not implemented |
 
@@ -101,7 +101,7 @@ flowchart LR
     cli -->|"probe and clean, ssh"| nodes
 ```
 
-Every action runs on all targets concurrently and reports per target, so one unreachable node does not stop the rest. A purge removes only the output directory unless `purge_scope` says otherwise, and never runs after a harvest narrowed by include patterns. [Actions](#actions) has the details.
+Every action runs on all targets concurrently and reports per target, so one unreachable node does not stop the rest. A purge removes the whole project directory from the node unless `purge_scope` narrows it to the output directory. After a harvest it runs only once a verification pass has found the local copy complete, and never after a harvest narrowed by include patterns. [Actions](#actions) has the details.
 
 ## Configuration
 
@@ -126,8 +126,8 @@ output_subdir = "output"              # default remote output directory, relativ
 includes = []                         # harvest only matching files; empty = everything
 excludes = ["*.tmp", "core.*", "*~"]  # rsync exclude patterns
 collision_strategy = "resume"         # one of: "resume" | "backup" | "abort"
-clean_remote_after_pull = false       # purge after a successful harvest (needs --yes)
-purge_scope = "output"                # one of: "output" | "project"
+clean_remote_after_pull = false       # purge after a verified harvest (needs --yes)
+purge_scope = "project"               # one of: "project" | "output"
 
 [[targets]]
 name = "Cluster-Node-01"              # unique; letters, digits, '.', '_', '-'; names the local harvest directory
@@ -148,7 +148,7 @@ strict_host_key_checking = "accept-new"   # optional override
 
 **pull** retrieves `remote_dir/output_subdir/` of every target into `local_destination_root/<name>/`. `--partial` resumes interrupted transfers. With `includes` set, only files matching one of the patterns are harvested and directories left empty are skipped; `excludes` take precedence over `includes`. When the local directory already exists, `collision_strategy` decides: `resume` reuses it, `backup` renames it to `<name>#1`, `<name>#2`, ... before creating a fresh one, `abort` fails the target. A destination that cannot be created fails that target only.
 
-**clean** removes the directory selected by `purge_scope` with `rm -rf`: the output directory by default, the whole `remote_dir` with `"project"`. The same purge runs after a successful pull when `--clean-remote` is given or `clean_remote_after_pull` is set. Every purge outside a dry run requires `--yes` on the command line. The path is validated first: it must be absolute, at least two components deep, free of `..`, and neither `/`, `/root`, `/home`, the user's home directory, nor anything under `/usr`, `/etc`, `/var`, and the other system directories. A purge is never issued after a harvest narrowed by `includes`, because files the filter left behind would be lost.
+**clean** removes the directory selected by `purge_scope` with `rm -rf`: the whole `remote_dir` by default, because a campaign deploys code that is not meant to stay on the nodes, or only the output directory with `"output"`. The same purge runs after a pull when `--clean-remote` is given or `clean_remote_after_pull` is set, but only once the harvest is verified: the transfer is repeated as `rsync --dry-run --itemize-changes`, and any item it still reports, typically because a job is writing, keeps the remote directory and fails that target although its data were retrieved. Rerun the pull once the node is idle. A purge destroys everything in its scope that the harvest did not copy: files matching `excludes` and, with the `project` scope, everything outside `output_subdir`. Every purge outside a dry run requires `--yes` on the command line. The path is validated first: it must be absolute, at least two components deep, free of `..`, and neither `/`, `/root`, `/home`, the user's home directory, nor anything under `/usr`, `/etc`, `/var`, and the other system directories. A purge is never issued after a harvest narrowed by `includes`, because files the filter left behind would be lost.
 
 All targets are processed concurrently; a failure on one target does not stop the others. Each action ends with a summary table giving the exit code, duration, and message per target.
 
@@ -167,6 +167,7 @@ See `SECURITY.md` for the reporting procedure.
 - Linux only; developed on Fedora, tested in CI on Ubuntu.
 - Password authentication only; ssh keys and agents are not used.
 - `push` never deletes remote files.
+- A purge removes `remote_dir` only. Julia stores the source text of every precompiled package in its cache files, so a private package deployed with this tool stays readable under `~/.julia/compiled/` on the node until that cache is removed as well.
 - Targets are processed by cooperative tasks on one thread, which is sufficient because the work is bound by the network and by rsync itself.
 - No retry logic; rerun the action for the targets that failed.
 

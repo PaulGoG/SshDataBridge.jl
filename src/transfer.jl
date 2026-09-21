@@ -20,13 +20,14 @@ function rsync_host(host::AbstractString)::String
 end
 
 """
-    rsync_base_arguments(globals::GlobalOptions)::Vector{String}
+    rsync_base_arguments(globals::GlobalOptions; archive_flags="-av")::Vector{String}
 
-Leading arguments shared by push and pull invocations: the `sshpass` prefix, the archive
+Leading arguments shared by every `rsync` invocation: the `sshpass` prefix, the archive
 and resumption flags, and the optional compression and bandwidth settings.
 """
-function rsync_base_arguments(globals::GlobalOptions)::Vector{String}
-    args = String["sshpass", "-d", "0", "rsync", "-av", "--partial"]
+function rsync_base_arguments(globals::GlobalOptions;
+                              archive_flags::AbstractString="-av")::Vector{String}
+    args = String["sshpass", "-d", "0", "rsync", String(archive_flags), "--partial"]
     globals.compress && push!(args, "-z")
     globals.bandwidth_limit > 0 && push!(args, "--bwlimit=$(globals.bandwidth_limit)")
     return args
@@ -85,14 +86,79 @@ password is not part of the command; [`run_authenticated`](@ref) supplies it.
 """
 function build_pull_command(target::BridgeTarget, globals::GlobalOptions,
                             pull_opts::PullOptions, local_target_dir::AbstractString)::Cmd
-    args = rsync_base_arguments(globals)
-    push!(args, "-e", build_ssh_rsh_string(target, globals))
+    return Cmd(append!(rsync_base_arguments(globals),
+                       pull_endpoint_arguments(target, globals, pull_opts,
+                                               local_target_dir)))
+end
+
+"""
+    pull_endpoint_arguments(target, globals, pull_opts, local_target_dir)::Vector{String}
+
+Remote shell, filter rules, source, and destination of a harvest; shared by the transfer
+and by its verification pass so that both always compare the same file set.
+"""
+function pull_endpoint_arguments(target::BridgeTarget, globals::GlobalOptions,
+                                 pull_opts::PullOptions,
+                                 local_target_dir::AbstractString)::Vector{String}
+    args = String["-e", build_ssh_rsh_string(target, globals)]
     append!(args, pull_filter_arguments(pull_opts))
     source = "$(target.user)@$(rsync_host(target.host)):$(remote_output_directory(target))/"
     destination = endswith(local_target_dir, '/') ? String(local_target_dir) :
                   local_target_dir * "/"
-    push!(args, source, destination)
-    return Cmd(args)
+    return push!(args, source, destination)
+end
+
+"""
+    build_verification_command(target::BridgeTarget, globals::GlobalOptions,
+                               pull_opts::PullOptions,
+                               local_target_dir::AbstractString)::Cmd
+
+The harvest of [`build_pull_command`](@ref) repeated as a dry run: `--dry-run` transfers
+nothing, `--itemize-changes` prints one line per item that still differs between the
+remote output directory and `local_target_dir`, and `-v` is dropped, so the standard
+output is empty exactly when the local harvest is complete.
+"""
+function build_verification_command(target::BridgeTarget, globals::GlobalOptions,
+                                    pull_opts::PullOptions,
+                                    local_target_dir::AbstractString)::Cmd
+    args = rsync_base_arguments(globals; archive_flags="-a")
+    push!(args, "--dry-run", "--itemize-changes")
+    return Cmd(append!(args,
+                       pull_endpoint_arguments(target, globals, pull_opts,
+                                               local_target_dir)))
+end
+
+"""
+    verify_harvest(target::BridgeTarget, config::BridgeConfig,
+                   local_target_dir::AbstractString)
+
+Run the verification pass of [`build_verification_command`](@ref) and return
+`(; complete, detail)`. The harvest counts as complete only when the pass exits with
+status zero and prints nothing; any output line is an item that changed on the remote
+since the transfer, typically because a job is still writing. `detail` explains an
+incomplete harvest and is empty otherwise.
+"""
+function verify_harvest(target::BridgeTarget, config::BridgeConfig,
+                        local_target_dir::AbstractString)
+    cmd = build_verification_command(target, config.globals, config.pull, local_target_dir)
+    outcome = try
+        run_authenticated(cmd, target.password)
+    catch err
+        err isa Base.IOError || rethrow()
+        return (; complete=false,
+                detail="the verification pass could not be spawned: $(sprint(showerror, err))")
+    end
+    if outcome.exitcode != 0
+        return (; complete=false,
+                detail="the verification pass exited with code $(outcome.exitcode): $(strip(outcome.stderr))")
+    end
+    pending = String[String(line)
+                     for line in eachline(IOBuffer(outcome.stdout))
+                     if !isempty(strip(line))]
+    isempty(pending) && return (; complete=true, detail="")
+    listed = join(first(pending, 3), "; ") * (length(pending) > 3 ? "; ..." : "")
+    return (; complete=false,
+            detail="$(length(pending)) item(s) on the remote differ from the local harvest ($(listed))")
 end
 
 """
@@ -168,10 +234,15 @@ end
 
 Harvest the remote output directory of a single target. When `clean_remote` is `true`, or
 `nothing` and `config.pull.clean_remote_after_pull` is set, the directory selected by
-`config.pull.purge_scope` is purged after a successful transfer. The purge is skipped, and
-the reason reported, when `config.pull.includes` narrows the harvest, because files left
-unharvested by the filter would otherwise be destroyed. A local destination that cannot
-be prepared (collision refusal or file-system error) is reported as a failed result.
+`config.pull.purge_scope` is purged after the transfer, provided that
+[`verify_harvest`](@ref) finds the local copy complete. A harvest that is incomplete,
+because a job on the node is still writing or the verification pass itself failed, keeps
+the remote directory, and the target is reported as failed: the data were retrieved, but
+the requested purge did not happen. A purge that fails is reported the same way. The purge
+is skipped, and the reason reported, when `config.pull.includes` narrows the harvest,
+because files left unharvested by the filter would otherwise be destroyed. A local
+destination that cannot be prepared (collision refusal or file-system error) is reported
+as a failed result.
 """
 function pull_target(target::BridgeTarget, config::BridgeConfig; dry_run::Bool=false,
                      clean_remote::Union{Bool, Nothing}=nothing)::TransferResult
@@ -189,7 +260,7 @@ function pull_target(target::BridgeTarget, config::BridgeConfig; dry_run::Bool=f
         elseif filtered
             " [post-pull purge skipped: 'includes' filter active]"
         else
-            " [post-pull purge of '$(purge_path(target, scope))']"
+            " [post-pull purge of '$(purge_path(target, scope))' after a verification pass]"
         end
         return TransferResult(target, :pull, true, 0, 0.0,
                               "Dry run: $(command_string(cmd))$(clean_note)")
@@ -217,16 +288,27 @@ function pull_target(target::BridgeTarget, config::BridgeConfig; dry_run::Bool=f
     end
 
     message = "Harvested successfully in $(round(duration; digits=2)) s."
-    if should_clean
-        if filtered
-            message *= " Remote purge skipped: an 'includes' filter is active, so unharvested files may remain."
-        else
-            clean_result = clean_remote_target(target, config.globals; scope=scope)
-            message *= clean_result.success ? " " * clean_result.message :
-                       " Remote purge failed: " * clean_result.message
-        end
+    if !should_clean
+        return TransferResult(target, :pull, true, outcome.exitcode, duration, message)
     end
-    return TransferResult(target, :pull, true, outcome.exitcode, duration, message)
+    if filtered
+        message *= " Remote purge skipped: an 'includes' filter is active, so unharvested files may remain."
+        return TransferResult(target, :pull, true, outcome.exitcode, duration, message)
+    end
+
+    verification = verify_harvest(target, config, dest_dir)
+    if !verification.complete
+        message *= " Remote purge refused, nothing was deleted: $(verification.detail). Rerun the pull once the node is idle."
+        return TransferResult(target, :pull, false, -1, time() - t_start, message)
+    end
+    clean_result = clean_remote_target(target, config.globals; scope=scope)
+    if !clean_result.success
+        message *= " Remote purge failed: " * clean_result.message
+        return TransferResult(target, :pull, false, clean_result.exit_code,
+                              time() - t_start, message)
+    end
+    return TransferResult(target, :pull, true, outcome.exitcode, time() - t_start,
+                          message * " " * clean_result.message)
 end
 
 """

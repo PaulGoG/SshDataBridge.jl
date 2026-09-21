@@ -2,6 +2,10 @@ const VALID_HOST_KEY_POLICIES = ("accept-new", "yes", "no")
 const VALID_COLLISION_STRATEGIES = (:resume, :backup, :abort)
 const VALID_PURGE_SCOPES = (:output, :project)
 
+# A campaign deploys code that must not stay on the nodes, so a purge removes the whole
+# project directory unless the configuration narrows it.
+const DEFAULT_PURGE_SCOPE = :project
+
 const HOSTNAME_PATTERN = r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\.?$"
 const IPV6_PATTERN = r"^\[?(?=[0-9A-Fa-f:.]*[0-9A-Fa-f])[0-9A-Fa-f]{0,4}(?::[0-9A-Fa-f]{0,4}){2,7}(?:\.[0-9]{1,3}){0,3}\]?$"
 const USERNAME_PATTERN = r"^[A-Za-z_][A-Za-z0-9._-]{0,31}$"

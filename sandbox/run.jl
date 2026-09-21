@@ -67,7 +67,7 @@ includes = []
 excludes = ["*.tmp"]
 collision_strategy = "resume"
 clean_remote_after_pull = false
-purge_scope = "output"
+purge_scope = "project"
 
 [[targets]]
 name = "sandbox-node-01"
@@ -155,7 +155,7 @@ const SCENARIOS = [(; arguments=["probe"], stub_exit=0, expected=0,
                     spawn=false, description="pull prints its rsync command"),
                    (; arguments=["clean", "--dry-run"], stub_exit=0, expected=0,
                     fragments=["Dry run: sshpass -d 0 ssh -n",
-                               "rm -rf -- /home/researcher/campaigns/sandbox/data"],
+                               "rm -rf -- /home/researcher/campaigns/sandbox'"],
                     spawn=false, description="clean previews the removal"),
                    (; arguments=["clean"], stub_exit=0, expected=1,
                     fragments=["re-run with --yes"], spawn=false,
@@ -169,6 +169,11 @@ const SCENARIOS = [(; arguments=["probe"], stub_exit=0, expected=0,
                    (; arguments=["pull"], stub_exit=0, expected=0,
                     fragments=["Harvested successfully", "Succeeded: 2 | Failed: 0"],
                     spawn=false, description="pull completes against the stubs"),
+                   (; arguments=["pull", "--clean-remote", "--yes"], stub_exit=0,
+                    expected=0,
+                    fragments=["Harvested successfully", "(project scope) purged in",
+                               "Succeeded: 2 | Failed: 0"], spawn=false,
+                    description="a verified harvest is followed by the project purge"),
                    (; arguments=["push"], stub_exit=255, expected=2,
                     fragments=["Remote directory creation failed",
                                "Succeeded: 0 | Failed: 2"], spawn=false,
@@ -207,7 +212,7 @@ function run_sandbox(; io::IO=stdout, verbose::Bool=true)
                 ok = outcome.exitcode == scenario.expected && !leaked &&
                      isempty(missing_fragments)
                 println(io, rpad(ok ? "[ok]" : "[UNEXPECTED]", 14),
-                        rpad(join(scenario.arguments, " "), 20), "exit ", outcome.exitcode,
+                        rpad(join(scenario.arguments, " "), 28), "exit ", outcome.exitcode,
                         " (expected ", scenario.expected, ")   ", scenario.description)
                 for fragment in missing_fragments
                     println(io, " "^14, "missing from the output: ", fragment)

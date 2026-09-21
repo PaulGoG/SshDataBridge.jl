@@ -55,11 +55,11 @@ excludes = [
 # Collision handling strategy if local destination directory already exists
 collision_strategy = "resume"  # one of: "resume" | "backup" | "abort"
 
-# Purge the remote directory after a successful harvest (requires --yes on the CLI)
+# Purge the remote directory after a verified harvest (requires --yes on the CLI)
 clean_remote_after_pull = false  # one of: true | false
 
 # Remote directory removed by a purge
-purge_scope = "output"  # one of: "output" | "project"
+purge_scope = "project"  # one of: "project" | "output"
 
 [[targets]]
 # Unique label; names the local harvest directory

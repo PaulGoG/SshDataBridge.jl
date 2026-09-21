@@ -185,8 +185,8 @@ function parse_config(dict::AbstractDict; config_dir::AbstractString=pwd())::Bri
                                                    "resume", "[pull]")),
                             optional_bool(pull_raw, "clean_remote_after_pull", false,
                                           "[pull]"),
-                            Symbol(optional_string(pull_raw, "purge_scope", "output",
-                                                   "[pull]")))
+                            Symbol(optional_string(pull_raw, "purge_scope",
+                                                   String(DEFAULT_PURGE_SCOPE), "[pull]")))
 
     if !haskey(dict, "targets")
         throw(ArgumentError("Configuration must contain at least one [[targets]] entry."))

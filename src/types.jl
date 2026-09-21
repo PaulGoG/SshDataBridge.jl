@@ -159,8 +159,8 @@ Parameters of the retrieval of remote output directories to the local workstatio
 - `includes::Vector{String}`: `rsync` include patterns; empty means everything.
 - `excludes::Vector{String}`: `rsync` exclude patterns.
 - `collision_strategy::Symbol`: `:resume`, `:backup`, or `:abort` when the local directory exists.
-- `clean_remote_after_pull::Bool`: Purge the remote directory after a successful harvest.
-- `purge_scope::Symbol`: Directory removed by a purge: `:output` (the output directory) or `:project` (the whole base directory).
+- `clean_remote_after_pull::Bool`: Purge the remote directory after a verified harvest.
+- `purge_scope::Symbol`: Directory removed by a purge: `:project` (the whole base directory, the default) or `:output` (the output directory only).
 """
 struct PullOptions
     local_destination_root::String
@@ -177,7 +177,7 @@ struct PullOptions
                          excludes::AbstractVector=DEFAULT_PULL_EXCLUDES,
                          collision_strategy::Symbol=:resume,
                          clean_remote_after_pull::Bool=false,
-                         purge_scope::Symbol=:output)
+                         purge_scope::Symbol=DEFAULT_PURGE_SCOPE)
         validate_pull_options(local_destination_root, output_subdir, collision_strategy,
                               purge_scope)
         validate_patterns(includes, "[pull].includes")

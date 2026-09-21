@@ -17,25 +17,37 @@ if [ "$3" = "rsync" ]; then
 else
     code="${STUB_EXIT_CODE:-0}"
 fi
+out="${STUB_STDOUT:-}"
+case "$*" in
+    *--itemize-changes*)
+        code="${STUB_VERIFY_EXIT_CODE:-$code}"
+        out="${STUB_VERIFY_STDOUT:-}"
+        ;;
+esac
 if [ -n "${STUB_ARGS_FILE:-}" ]; then
     printf '%s\n' "$*" >> "$STUB_ARGS_FILE"
 fi
-printf '%s\n' "${STUB_STDOUT:-}"
+printf '%s\n' "$out"
 printf '%s\n' "${STUB_STDERR:-stub stderr}" >&2
 exit "$code"
 """
 
 """
-    with_stub_binaries(f; exit_code, rsync_exit_code, stdout_text, stderr_text)
+    with_stub_binaries(f; exit_code, rsync_exit_code, verify_exit_code, stdout_text,
+                       verify_stdout_text, stderr_text)
 
 Run `f(args_file)` with stub `sshpass`, `ssh`, and `rsync` executables placed first on
 `PATH`. The stubs print `stdout_text` and `stderr_text`, append their argument vector to
 `args_file`, and exit with `exit_code` (or `rsync_exit_code` when the third argument is
-`rsync`, i.e. for transfer commands).
+`rsync`, i.e. for transfer commands). The verification pass of a harvest, recognised by
+`--itemize-changes`, prints `verify_stdout_text` instead and exits with
+`verify_exit_code` when that is given.
 """
 function with_stub_binaries(f; exit_code::Integer=0,
                             rsync_exit_code::Union{Nothing, Integer}=nothing,
+                            verify_exit_code::Union{Nothing, Integer}=nothing,
                             stdout_text::AbstractString="",
+                            verify_stdout_text::AbstractString="",
                             stderr_text::AbstractString="stub stderr")
     return mktempdir() do stubdir
         for name in ("sshpass", "ssh", "rsync")
@@ -48,7 +60,11 @@ function with_stub_binaries(f; exit_code::Integer=0,
         withenv("PATH" => stubdir * ":" * get(ENV, "PATH", ""),
                 "STUB_EXIT_CODE" => string(exit_code),
                 "STUB_RSYNC_EXIT_CODE" => string(rsync_code),
+                "STUB_VERIFY_EXIT_CODE" =>
+                    verify_exit_code === nothing ? nothing :
+                    string(verify_exit_code),
                 "STUB_STDOUT" => stdout_text,
+                "STUB_VERIFY_STDOUT" => verify_stdout_text,
                 "STUB_STDERR" => stderr_text,
                 "STUB_ARGS_FILE" => args_file) do
             return f(args_file)
@@ -161,9 +177,9 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
         @test pull_valid.collision_strategy == :backup
         @test pull_valid.clean_remote_after_pull == true
         @test PullOptions("/x").excludes == SshDataBridge.DEFAULT_PULL_EXCLUDES
-        @test PullOptions("/x").purge_scope == :output
+        @test PullOptions("/x").purge_scope == :project
         @test PullOptions("/x", "output", String[], String[], :resume, false,
-                          :project).purge_scope == :project
+                          :output).purge_scope == :output
         @test_throws ArgumentError PullOptions("/x", "output", String[], String[], :resume,
                                                false, :everything)
         @test PullOptions("/x", "out/").output_subdir == "out"
@@ -328,6 +344,9 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
 
         @test parse_config(Dict{String, Any}("targets" => Any[minimal_target()])) isa
               BridgeConfig
+        # A purge removes the whole project unless the configuration narrows it
+        @test parse_config(Dict{String, Any}("targets" => Any[minimal_target()])).pull.purge_scope ==
+              :project
         @test occursin("'typo'",
                        config_error_message(Dict{String, Any}("typo" => 1,
                                                               "targets" =>
@@ -714,14 +733,66 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
                 @test only(pull_all_targets(blocked_config)).success == false
             end
 
+            # A purge follows a verified harvest: transfer, verification pass, removal of
+            # the whole project directory
             with_stub_binaries() do args_file
                 result = pull_target(target, config; clean_remote=true)
                 @test result.success
                 @test occursin("Harvested successfully", result.message)
                 @test occursin("purged", result.message)
                 invocations = recorded_invocations(args_file)
+                @test length(invocations) == 3
+                @test occursin("rsync -av --partial", invocations[1])
+                @test occursin("rsync -a --partial", invocations[2])
+                @test occursin("--dry-run --itemize-changes", invocations[2])
+                @test occursin("rm -rf -- '/rem/sim a'", invocations[3])
+                @test !occursin("/output", invocations[3])
+            end
+
+            # The output scope narrows the purge to the output directory
+            output_opts = PullOptions(harvest_root, "output", String[], String[], :resume,
+                                      false, :output)
+            output_config = BridgeConfig(globals, push_opts, output_opts, [target])
+            with_stub_binaries() do args_file
+                result = pull_target(target, output_config; clean_remote=true)
+                @test result.success
+                @test occursin("rm -rf -- '/rem/sim a/output'",
+                               recorded_invocations(args_file)[3])
+            end
+
+            # Items that changed on the remote since the transfer block the purge: nothing
+            # is deleted and the target fails although the data were retrieved
+            pending = ">f+++++++++ late_a.csv\n>f.st...... run.log\n.d..t...... ./\n>f+++++++++ late_b.csv"
+            with_stub_binaries(; verify_stdout_text=pending) do args_file
+                result = pull_target(target, config; clean_remote=true)
+                @test !result.success
+                @test result.exit_code == -1
+                @test occursin("Harvested successfully", result.message)
+                @test occursin("Remote purge refused, nothing was deleted", result.message)
+                @test occursin("4 item(s) on the remote differ", result.message)
+                @test occursin("late_a.csv", result.message)
+                @test occursin("; ...", result.message)
+                @test !occursin("late_b.csv", result.message)
+                invocations = recorded_invocations(args_file)
                 @test length(invocations) == 2
-                @test occursin("rm -rf -- '/rem/sim a/output'", invocations[2])
+                @test !any(occursin("rm -rf", line) for line in invocations)
+            end
+
+            # A verification pass that fails is no evidence of a complete harvest
+            with_stub_binaries(; verify_exit_code=12, stderr_text="connection reset",
+                               ) do args_file
+                result = pull_target(target, config; clean_remote=true)
+                @test !result.success
+                @test occursin("verification pass exited with code 12", result.message)
+                @test occursin("connection reset", result.message)
+                @test !any(occursin("rm -rf", line)
+                           for line in recorded_invocations(args_file))
+            end
+
+            # Without a requested purge no verification pass runs
+            with_stub_binaries() do args_file
+                @test pull_target(target, config).success
+                @test length(recorded_invocations(args_file)) == 1
             end
 
             # A filtered harvest never purges, whatever the flags say
@@ -758,6 +829,15 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
                 @test !result.success
                 @test result.exit_code == 1
                 @test occursin("rm: cannot remove", result.message)
+            end
+
+            with_stub_binaries() do args_file
+                @test clean_remote_target(target, globals).success
+                @test occursin("rm -rf -- '/rem/sim a'",
+                               only(recorded_invocations(args_file)))
+                @test clean_remote_target(target, globals; scope=:output).success
+                @test occursin("rm -rf -- '/rem/sim a/output'",
+                               last(recorded_invocations(args_file)))
             end
 
             with_stub_binaries() do _
@@ -807,7 +887,8 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
         @test all(r -> r.action == :pull, pull_results)
         @test all(r -> occursin("Dry run: sshpass -d 0 rsync", r.message), pull_results)
         @test all(r -> occursin("post-pull purge of '/rem/sim_", r.message), pull_results)
-        @test occursin("post-pull purge of '/rem/sim_a/output'", pull_results[1].message)
+        @test occursin("post-pull purge of '/rem/sim_a' after a verification pass",
+                       pull_results[1].message)
 
         filtered_config = BridgeConfig(globals, push_opts,
                                        PullOptions("/local/dst", "output", ["*.csv"],
@@ -816,18 +897,18 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
         filtered_results = pull_all_targets(filtered_config; dry_run=true)
         @test all(r -> occursin("purge skipped", r.message), filtered_results)
 
-        project_config = BridgeConfig(globals, push_opts,
-                                      PullOptions("/local/dst", "output", String[],
-                                                  String[], :resume, true, :project),
-                                      [target1, target2])
-        project_clean = clean_all_remote_targets(project_config; dry_run=true)
-        @test endswith(project_clean[1].message, "'rm -rf -- /rem/sim_a'")
+        output_config = BridgeConfig(globals, push_opts,
+                                     PullOptions("/local/dst", "output", String[],
+                                                 String[], :resume, true, :output),
+                                     [target1, target2])
+        output_clean = clean_all_remote_targets(output_config; dry_run=true)
+        @test endswith(output_clean[1].message, "'rm -rf -- /rem/sim_a/output'")
 
         clean_results = clean_all_remote_targets(config; dry_run=true)
         @test length(clean_results) == 2
         @test all(r -> r.success, clean_results)
         @test all(r -> r.action == :clean, clean_results)
-        @test endswith(clean_results[1].message, "'rm -rf -- /rem/sim_a/output'")
+        @test endswith(clean_results[1].message, "'rm -rf -- /rem/sim_a'")
         @test occursin("ssh -n -p 22", clean_results[1].message)
 
         for result in vcat(push_results, pull_results, clean_results)

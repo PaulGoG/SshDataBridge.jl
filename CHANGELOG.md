@@ -6,10 +6,13 @@ All notable changes to this project are documented in this file. The format foll
 
 ### Added
 
+- A verification pass guards every purge that follows a harvest. The transfer is repeated as `rsync --dry-run --itemize-changes`; when it still reports an item, typically because a job on the node is writing, or when the pass itself fails, nothing is deleted and the target is reported as failed with the pending items named.
 - `CITATION.cff` and a citation section in the README.
 
 ### Changed
 
+- **Breaking:** `purge_scope` defaults to `"project"`. The tool deploys code that is not meant to stay on the nodes, so a purge now removes the whole `remote_dir` unless the configuration sets `purge_scope = "output"`. A configuration without the key, which purged only the output directory in 0.2.0, now purges the project. `--yes` and the path denylist apply as before.
+- A pull whose requested purge was refused or failed is reported as a failed target (exit status 2) instead of a success with a remark, because the remote directory is still there.
 - `scripts/run.jl`, `sandbox/run.jl`, and `test/runtests.jl` activate their environment through the `activate.jl` of that environment, so the test suite runs as `julia test/runtests.jl` without `--project`.
 - The README opens with a short file tree, the environment setup, the entry points, and the component status; the full tree moved into a collapsed section.
 - Dependabot runs weekly and also watches the formatting environment.

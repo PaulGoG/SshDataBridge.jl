@@ -48,7 +48,7 @@ function usage()::String
 
            Options:
              --config, -c <path>   Configuration TOML (default: config.toml next to the project)
-             --clean-remote        On pull: purge the remote directory after a successful harvest
+             --clean-remote        On pull: purge the remote directory after a verified harvest
              --yes                 Confirm remote deletion (required for clean and any purge)
              --dry-run             Print the commands that would run without executing them
              --help, -h            Show this reference

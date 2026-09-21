@@ -157,14 +157,16 @@ end
 
 """
     clean_remote_target(target::BridgeTarget, globals::GlobalOptions;
-                        scope::Symbol=:output, dry_run::Bool=false)::TransferResult
+                        scope::Symbol=:project, dry_run::Bool=false)::TransferResult
 
 Remove the directory selected by `scope` (see [`purge_path`](@ref)) on the remote host
-with `rm -rf`. The path is checked with [`validate_remote_path_safety`](@ref) before any
-command is issued; a refusal is reported as a failed result.
+with `rm -rf`; the default removes the whole project directory. The path is checked with
+[`validate_remote_path_safety`](@ref) before any command is issued; a refusal is reported
+as a failed result.
 """
 function clean_remote_target(target::BridgeTarget, globals::GlobalOptions;
-                             scope::Symbol=:output, dry_run::Bool=false)::TransferResult
+                             scope::Symbol=DEFAULT_PURGE_SCOPE,
+                             dry_run::Bool=false)::TransferResult
     t_start = time()
     path = purge_path(target, scope)
     try
