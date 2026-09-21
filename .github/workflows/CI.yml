@@ -39,7 +39,7 @@ jobs:
       - name: Instantiate test environment
         run: julia test/activate.jl
       - name: Run test suite
-        run: julia --project=test test/runtests.jl
+        run: julia test/runtests.jl
 
   format:
     name: Formatting

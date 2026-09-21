@@ -1,3 +1,9 @@
+# Run as a script, the suite activates the test environment itself. Under Pkg.test the
+# sandboxed environment is already active and PROGRAM_FILE is empty, so nothing happens.
+if abspath(PROGRAM_FILE) == @__FILE__
+    include(joinpath(@__DIR__, "activate.jl"))
+end
+
 using Test
 using SshDataBridge
 using Aqua

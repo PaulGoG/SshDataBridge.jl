@@ -17,9 +17,7 @@ test suite includes this file and asserts the same expectations.
 """
 
 if abspath(PROGRAM_FILE) == @__FILE__
-    using Pkg
-    Pkg.activate(dirname(@__DIR__); io=devnull)
-    Pkg.instantiate(; io=devnull)
+    include(joinpath(@__DIR__, "..", "activate.jl"))
 end
 using SshDataBridge
 
