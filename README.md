@@ -4,66 +4,29 @@
 [![Release](https://img.shields.io/github/v/release/PaulGoG/SshDataBridge.jl?label=release)](https://github.com/PaulGoG/SshDataBridge.jl/releases/latest)
 [![License](https://img.shields.io/github/license/PaulGoG/SshDataBridge.jl)](LICENSE)
 [![Julia](https://img.shields.io/badge/Julia-1.10%2B-9558B2?logo=julia&logoColor=white)](https://julialang.org)
-[![Platform](https://img.shields.io/badge/platform-Linux-333333?logo=linux&logoColor=white)](#requirements)
+[![Platform](https://img.shields.io/badge/platform-Linux-333333?logo=linux&logoColor=white)](#environment-setup)
 [![Aqua QA](https://raw.githubusercontent.com/JuliaTesting/Aqua.jl/master/badge.svg)](https://github.com/JuliaTesting/Aqua.jl)
 
 Deployment of a simulation code base to several remote compute nodes and retrieval of their results over SSH and rsync, driven by one TOML file and executed for all nodes in parallel from a single command.
 
 ```
 SshDataBridge/
-├── .github/
-│   ├── dependabot.yml       # Monthly updates of the GitHub Actions pins
-│   └── workflows/
-│       └── CI.yml           # Test matrix: Julia LTS, latest stable, pre-release
-├── .gitignore               # Credentials, harvested data, manifests
-├── .JuliaFormatter.toml     # YAS style, 92 columns
-├── CHANGELOG.md             # Release history
-├── LICENSE                  # MIT
-├── Project.toml             # Package metadata; standard-library dependencies only
-├── README.md
-├── SECURITY.md              # Threat model and vulnerability reporting
-├── activate.jl              # Activates and instantiates the root environment
-├── config.example.toml      # Annotated configuration template
-├── format/
-│   ├── Project.toml         # Formatting environment (JuliaFormatter 2.14+)
-│   ├── activate.jl          # Activates the formatting environment
-│   └── format.jl            # Formats the repository; --check verifies without writing
-├── sandbox/
-│   └── run.jl               # Exercises every action in process against stub binaries, no network
-├── scripts/
-│   └── run.jl               # Thin entry point around SshDataBridge.main
-├── src/
-│   ├── SshDataBridge.jl     # Module and exports
-│   ├── validation.jl        # Field grammars and remote-path safety rules
-│   ├── types.jl             # Configuration, result, and exception types
-│   ├── process.jl           # Credential delivery and process execution
-│   ├── config.jl            # Typed TOML parser
-│   ├── probe.jl             # ssh commands: probe, mkdir, purge
-│   ├── transfer.jl          # rsync commands: push, pull; clean-tree check
-│   └── cli.jl               # Command-line driver: probe | push | pull | clean
-└── test/
-    ├── Project.toml         # Test environment: Aqua, JET, ExplicitImports
-    ├── activate.jl          # Activates the test environment against the local source
-    └── runtests.jl          # Static analysis, unit tests, stub-binary process tests
+├── src/                   # Package: configuration parser, ssh and rsync commands, CLI driver
+├── scripts/run.jl         # Command-line entry point: probe | push | pull | clean
+├── sandbox/run.jl         # Every action exercised against stub binaries, no network
+├── test/                  # Test suite and its environment
+├── format/                # Formatting environment and script
+├── config.example.toml    # Configuration template
+├── activate.jl            # Activates and instantiates the root environment
+├── Project.toml
+├── CHANGELOG.md
+├── CITATION.cff
+└── SECURITY.md
 ```
 
-## How it works
+The complete tree is under [Repository layout](#repository-layout).
 
-```mermaid
-flowchart LR
-    src["local source tree"]
-    cli["scripts/run.jl"]
-    nodes["remote compute nodes<br/>remote_dir"]
-    harvest["local harvest<br/>one directory per target"]
-    src --> cli
-    cli -->|"push, rsync"| nodes
-    nodes -->|"pull, rsync --partial"| harvest
-    cli -->|"probe and clean, ssh"| nodes
-```
-
-Every action runs on all targets concurrently and reports per target, so one unreachable node does not stop the rest. A purge removes only the output directory unless `purge_scope` says otherwise, and never runs after a harvest narrowed by include patterns. [Actions](#actions) has the details.
-
-## Requirements
+## Environment setup
 
 Linux with the OpenSSH client, `sshpass`, and `rsync` on the workstation; `rsync` on every remote node; Julia 1.10 or later.
 
@@ -71,8 +34,6 @@ Linux with the OpenSSH client, `sshpass`, and `rsync` on the workstation; `rsync
 sudo dnf install sshpass rsync openssh-clients          # Fedora, RHEL
 sudo apt-get install sshpass rsync openssh-client       # Debian, Ubuntu
 ```
-
-## Installation
 
 Clone the repository and use it in place; this is the intended way to run the driver script, which activates the root environment itself, so no `--project` flag is needed:
 
@@ -101,7 +62,7 @@ julia scripts/run.jl pull                               # harvest all targets
 julia scripts/run.jl pull --clean-remote --yes          # harvest, then purge the remote output directory
 julia scripts/run.jl clean --yes                        # purge without harvesting
 julia scripts/run.jl clean --dry-run                    # show what a purge would remove
-julia --project=test test/runtests.jl                   # test suite
+julia test/runtests.jl                                  # test suite
 julia sandbox/run.jl                                    # exercise every action safely, no network
 julia format/format.jl                                  # format the sources
 julia format/format.jl --check                          # verify formatting without writing
@@ -115,6 +76,32 @@ The script only activates the environment and calls `SshDataBridge.main(args; io
 using SshDataBridge
 SshDataBridge.main(["probe", "--config", "config.toml"])
 ```
+
+## Component status
+
+| Component | Status |
+|---|---|
+| TOML configuration parser and field validation | Stable |
+| `probe`, `push`, `pull` | Stable; covered by process tests against stub binaries |
+| `clean` and the post-harvest purge | Stable; `--yes` gate and path denylist covered by tests |
+| Credential delivery to `sshpass` over standard input | Stable; redaction asserted by the test suite and the sandbox |
+| `push --delete`, retries, key-based authentication | Not implemented |
+
+## How it works
+
+```mermaid
+flowchart LR
+    src["local source tree"]
+    cli["scripts/run.jl"]
+    nodes["remote compute nodes<br/>remote_dir"]
+    harvest["local harvest<br/>one directory per target"]
+    src --> cli
+    cli -->|"push, rsync"| nodes
+    nodes -->|"pull, rsync --partial"| harvest
+    cli -->|"probe and clean, ssh"| nodes
+```
+
+Every action runs on all targets concurrently and reports per target, so one unreachable node does not stop the rest. A purge removes only the output directory unless `purge_scope` says otherwise, and never runs after a harvest narrowed by include patterns. [Actions](#actions) has the details.
 
 ## Configuration
 
@@ -182,6 +169,66 @@ See `SECURITY.md` for the reporting procedure.
 - `push` never deletes remote files.
 - Targets are processed by cooperative tasks on one thread, which is sufficient because the work is bound by the network and by rsync itself.
 - No retry logic; rerun the action for the targets that failed.
+
+## How to cite
+
+Citation metadata is in [CITATION.cff](CITATION.cff). BibTeX:
+
+```bibtex
+@software{Gogita_SshDataBridge_2026,
+  author  = {Gogîță, Paul-Adrian},
+  title   = {{SshDataBridge.jl}},
+  year    = {2026},
+  version = {0.2.0},
+  url     = {https://github.com/PaulGoG/SshDataBridge.jl}
+}
+```
+
+## Repository layout
+
+<details>
+<summary>Full file tree</summary>
+
+```
+SshDataBridge/
+├── .github/
+│   ├── dependabot.yml       # Weekly updates of the GitHub Actions pins and the formatting environment
+│   └── workflows/
+│       └── CI.yml           # Test matrix: Julia LTS, latest stable, pre-release
+├── .gitignore               # Credentials, harvested data, manifests
+├── .JuliaFormatter.toml     # YAS style, 92 columns
+├── CHANGELOG.md             # Release history
+├── CITATION.cff             # Citation metadata
+├── LICENSE                  # MIT
+├── Project.toml             # Package metadata; standard-library dependencies only
+├── README.md
+├── SECURITY.md              # Threat model and vulnerability reporting
+├── activate.jl              # Activates and instantiates the root environment
+├── config.example.toml      # Annotated configuration template
+├── format/
+│   ├── Project.toml         # Formatting environment (JuliaFormatter 2.14+)
+│   ├── activate.jl          # Activates the formatting environment
+│   └── format.jl            # Formats the repository; --check verifies without writing
+├── sandbox/
+│   └── run.jl               # Exercises every action in process against stub binaries, no network
+├── scripts/
+│   └── run.jl               # Thin entry point around SshDataBridge.main
+├── src/
+│   ├── SshDataBridge.jl     # Module and exports
+│   ├── validation.jl        # Field grammars and remote-path safety rules
+│   ├── types.jl             # Configuration, result, and exception types
+│   ├── process.jl           # Credential delivery and process execution
+│   ├── config.jl            # Typed TOML parser
+│   ├── probe.jl             # ssh commands: probe, mkdir, purge
+│   ├── transfer.jl          # rsync commands: push, pull; clean-tree check
+│   └── cli.jl               # Command-line driver: probe | push | pull | clean
+└── test/
+    ├── Project.toml         # Test environment: Aqua, JET, ExplicitImports
+    ├── activate.jl          # Activates the test environment against the local source
+    └── runtests.jl          # Static analysis, unit tests, stub-binary process tests
+```
+
+</details>
 
 ## License
 

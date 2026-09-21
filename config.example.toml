@@ -1,5 +1,4 @@
-# Configuration specification for SshDataBridge
-# Automates simulation payload deployment (push) and results harvesting (pull) over SSH/rsync
+# SshDataBridge configuration template. Copy to config.toml (ignored by git) and edit.
 
 [globals]
 # SSH connection timeout in seconds
@@ -11,8 +10,8 @@ strict_host_key_checking = "accept-new"  # one of: "accept-new" | "yes" | "no"
 # rsync in-flight compression
 compress = true  # one of: true | false
 
-# Network bandwidth limit per transfer in KBytes/s (0 = unlimited)
-bandwidth_limit = 0  # integer >= 0
+# rsync bandwidth limit per transfer
+bandwidth_limit = 0  # integer >= 0; units: KB/s; 0 = unlimited
 
 [push]
 # Local source directory to deploy to remotes
@@ -30,7 +29,7 @@ excludes = [
     "*.jl.cov",
 ]
 
-# Automatically honor all ignore rules from the project's .gitignore file
+# Apply the .gitignore rules of the source tree as rsync excludes
 use_gitignore = true  # one of: true | false
 
 # Require clean git working tree before allowing push
@@ -41,7 +40,7 @@ require_clean_git = false  # one of: true | false
 local_destination_root = "data/harvested_results"  # path relative to this config file or absolute
 
 # Default relative output subdirectory on remotes
-output_subdir = "output"
+output_subdir = "output"  # relative path without '..' segments
 
 # Harvest only files matching these patterns (empty = all files); excludes take precedence
 includes = []
@@ -64,7 +63,7 @@ purge_scope = "output"  # one of: "output" | "project"
 
 [[targets]]
 # Unique label; names the local harvest directory
-name = "Cluster-Node-01"
+name = "Cluster-Node-01"  # letters, digits, '.', '_', '-'; at most 64 characters
 
 # Remote IPv4/IPv6 address or hostname
 host = "192.168.1.100"
@@ -79,13 +78,13 @@ user = "scientist"
 password = "example_password_1"
 
 # Remote base directory for simulation campaign
-remote_dir = "/home/scientist/campaigns/sim_batch_01"
+remote_dir = "/home/scientist/campaigns/sim_batch_01"  # absolute path without '..' segments
 
 # Remote output subdirectory relative to remote_dir (optional, defaults to [pull].output_subdir)
-output_subdir = "output"
+output_subdir = "output"  # relative path without '..' segments
 
 # Optional host key policy override
-strict_host_key_checking = "accept-new"
+strict_host_key_checking = "accept-new"  # one of: "accept-new" | "yes" | "no"
 
 [[targets]]
 name = "Cluster-Node-02"
