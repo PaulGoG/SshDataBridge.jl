@@ -209,7 +209,7 @@ SshDataBridge/
 ├── format/
 │   ├── Project.toml         # Formatting environment (JuliaFormatter 2.14+)
 │   ├── activate.jl          # Activates the formatting environment
-│   └── format.jl            # Formats the repository; --check verifies without writing
+│   └── format.jl            # Formats the repository; --check verifies without writing; refuses files that do not parse
 ├── sandbox/
 │   └── run.jl               # Exercises every action in process against stub binaries, no network
 ├── scripts/

@@ -23,6 +23,7 @@ All notable changes to this project are documented in this file. The format foll
 ### Fixed
 
 - `Pkg.test()` passes. The sandbox scenario that spawns `scripts/run.jl` inherited the load path that `Pkg.test` exports, which lacks the standard libraries, so the child could not load `Pkg` and the scenario failed; the spawned driver now starts without `JULIA_LOAD_PATH` and `JULIA_PROJECT`. Running the suite as a script was not affected.
+- `julia format/format.jl --check` fails when a source file does not parse. JuliaFormatter skips such a file with a warning and still reports success, so a syntax error in a file that no test loads passed the formatting job; the script now lists the files that do not parse and exits 1 before formatting, in both modes.
 
 ## [0.2.0] - 2026-09-10
 
