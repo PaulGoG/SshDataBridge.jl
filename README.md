@@ -54,7 +54,7 @@ julia -e 'using Pkg; Pkg.add(url="https://github.com/PaulGoG/SshDataBridge.jl")'
 ## Entry points
 
 ```bash
-cp config.example.toml config.toml                      # then edit hosts and credentials
+cp config.example.toml config.toml                      # then edit paths, hosts, and credentials
 julia scripts/run.jl probe                              # reachability, remote rsync, directories
 julia scripts/run.jl push --dry-run                     # print the rsync commands
 julia scripts/run.jl push                               # deploy to all targets
@@ -105,7 +105,7 @@ Every action runs on all targets concurrently and reports per target, so one unr
 
 ## Configuration
 
-`config.toml` is ignored by git because it holds passwords. Unknown keys and values of the wrong type are rejected before anything runs; relative local paths are resolved against the directory of the configuration file and a leading `~` expands to the home directory.
+`config.toml` is ignored by git because it holds passwords. Unknown keys and values of the wrong type are rejected before anything runs; relative local paths are resolved against the directory of the configuration file and a leading `~` expands to the home directory. `local_source_dir` and `local_destination_root` are mandatory; every other key has a default.
 
 ```toml
 [globals]
@@ -115,13 +115,13 @@ compress = true                       # rsync -z
 bandwidth_limit = 0                   # integer >= 0; units: KB/s; 0 = unlimited
 
 [push]
-local_source_dir = "."                # directory deployed to every target
-excludes = [".git", ".github", "*.swp", "data/output"]   # rsync exclude patterns
+local_source_dir = "~/projects/sim_batch_01"   # mandatory; directory deployed to every target
+excludes = [".git", ".github", "*.swp"]   # rsync exclude patterns
 use_gitignore = true                  # honour the .gitignore of the source tree
 require_clean_git = false             # refuse to deploy from a dirty working tree
 
 [pull]
-local_destination_root = "data/harvested_results"   # one subdirectory per target name
+local_destination_root = "~/campaigns/sim_batch_01/harvest"   # mandatory; one subdirectory per target, plus the rsync logs
 output_subdir = "output"              # default remote output directory, relative to remote_dir
 includes = []                         # harvest only matching files; empty = everything
 excludes = ["*.tmp", "core.*", "*~"]  # rsync exclude patterns
@@ -196,7 +196,7 @@ SshDataBridge/
 │   ├── dependabot.yml       # Weekly updates of the GitHub Actions pins and the formatting environment
 │   └── workflows/
 │       └── CI.yml           # Test matrix: Julia LTS, latest stable, pre-release
-├── .gitignore               # Credentials, harvested data, manifests
+├── .gitignore               # Credentials and manifests
 ├── .JuliaFormatter.toml     # YAS style, 92 columns
 ├── CHANGELOG.md             # Release history
 ├── CITATION.cff             # Citation metadata

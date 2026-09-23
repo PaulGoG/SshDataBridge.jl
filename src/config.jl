@@ -145,7 +145,10 @@ end
 
 Build a validated [`BridgeConfig`](@ref) from a parsed TOML dictionary. Every table is
 checked for unknown keys and every value for its expected type; mandatory target keys are
-reported by name. Relative local paths are resolved against `config_dir`.
+reported by name. `[push].local_source_dir` and `[pull].local_destination_root` are
+mandatory as well, so that a configuration can never deploy the directory of the tool
+itself, or harvest into it, by omission. Relative local paths are resolved against
+`config_dir`.
 """
 function parse_config(dict::AbstractDict; config_dir::AbstractString=pwd())::BridgeConfig
     reject_unknown_keys(dict, TOP_LEVEL_KEYS, "the top level")
@@ -162,8 +165,8 @@ function parse_config(dict::AbstractDict; config_dir::AbstractString=pwd())::Bri
 
     push_raw = configuration_table(dict, "push")
     reject_unknown_keys(push_raw, PUSH_KEYS, "[push]")
-    push_opts = PushOptions(resolve_local_path(optional_string(push_raw,
-                                                               "local_source_dir", ".",
+    push_opts = PushOptions(resolve_local_path(required_string(push_raw,
+                                                               "local_source_dir",
                                                                "[push]"), config_dir),
                             optional_string_array(push_raw, "excludes",
                                                   DEFAULT_PUSH_EXCLUDES, "[push]"),
@@ -172,9 +175,8 @@ function parse_config(dict::AbstractDict; config_dir::AbstractString=pwd())::Bri
 
     pull_raw = configuration_table(dict, "pull")
     reject_unknown_keys(pull_raw, PULL_KEYS, "[pull]")
-    pull_opts = PullOptions(resolve_local_path(optional_string(pull_raw,
+    pull_opts = PullOptions(resolve_local_path(required_string(pull_raw,
                                                                "local_destination_root",
-                                                               "data/harvested_results",
                                                                "[pull]"), config_dir),
                             optional_string(pull_raw, "output_subdir", "output", "[pull]"),
                             optional_string_array(pull_raw, "includes", String[],

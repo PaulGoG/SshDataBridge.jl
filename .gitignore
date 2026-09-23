@@ -4,15 +4,6 @@ config.toml
 credentials.toml
 *.local.toml
 
-# Harvested simulation data & caches
-data/
-output/
-harvested_results/
-*.h5
-*.jld2
-*.csv
-*.arrow
-
 # Julia environment artifacts
 *.jl.cov
 *.jl.*.cov

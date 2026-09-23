@@ -12,6 +12,7 @@ All notable changes to this project are documented in this file. The format foll
 ### Changed
 
 - **Breaking:** `purge_scope` defaults to `"project"`. The tool deploys code that is not meant to stay on the nodes, so a purge now removes the whole `remote_dir` unless the configuration sets `purge_scope = "output"`. A configuration without the key, which purged only the output directory in 0.2.0, now purges the project. `--yes` and the path denylist apply as before.
+- **Breaking:** `[push].local_source_dir` and `[pull].local_destination_root` are mandatory. They defaulted to the directory of the configuration file and to `data/harvested_results` below it, so a configuration that omitted them deployed the clone of this tool to every node and harvested into it. The default push excludes no longer list `data/output` and `harvested_results`, which existed only for that case.
 - A pull whose requested purge was refused or failed is reported as a failed target (exit status 2) instead of a success with a remark, because the remote directory is still there.
 - `scripts/run.jl`, `sandbox/run.jl`, and `test/runtests.jl` activate their environment through the `activate.jl` of that environment, so the test suite runs as `julia test/runtests.jl` without `--project`.
 - The README opens with a short file tree, the environment setup, the entry points, and the component status; the full tree moved into a collapsed section.

@@ -163,6 +163,8 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
         @test p_valid.require_clean_git == true
         @test p_valid.use_gitignore == true
         @test PushOptions("/x").excludes == SshDataBridge.DEFAULT_PUSH_EXCLUDES
+        @test SshDataBridge.DEFAULT_PUSH_EXCLUDES ==
+              [".git", ".github", ".vscode", "*.swp", "*~"]
         @test_throws ArgumentError PushOptions("")
         @test_throws ArgumentError PushOptions("/x", [""])
         @test_throws ArgumentError PushOptions("/x", ["a\nb"])
@@ -293,31 +295,6 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
         @test_throws ArgumentError parse_config(Dict{String, Any}("globals" => Dict()))
         @test_throws ArgumentError parse_config(Dict{String, Any}("targets" => Any[]))
 
-        # Target names must be unique because they name the local harvest directories
-        twin(name) = Dict{String, Any}("name" => name, "host" => "10.0.0.1", "user" => "u",
-                                       "password" => "p", "remote_dir" => "/a/b")
-        duplicate_error = try
-            parse_config(Dict{String, Any}("targets" => Any[twin("Node"), twin("Other"),
-                                                            twin("Node")]))
-            nothing
-        catch err
-            err
-        end
-        @test duplicate_error isa ArgumentError
-        @test occursin("duplicated: Node.", sprint(showerror, duplicate_error))
-        @test parse_config(Dict{String, Any}("targets" => Any[twin("Node"), twin("Other")])) isa
-              BridgeConfig
-        same = BridgeTarget("Node", "10.0.0.1", 22, "u", "p", "/a/b")
-        @test_throws ArgumentError BridgeConfig(GlobalOptions(), PushOptions("/x"),
-                                                PullOptions("/y"), [same, same])
-        @test_throws ArgumentError parse_config(Dict{String, Any}("pull" =>
-                                                                      Dict{String, Any}("purge_scope" => "everything"),
-                                                                  "targets" =>
-                                                                      Any[Dict{String, Any}("host" => "10.0.0.1",
-                                                                                            "user" => "u",
-                                                                                            "password" => "p",
-                                                                                            "remote_dir" => "/a/b")]))
-
         # Malformed TOML, unknown keys, wrong types, and missing mandatory keys fail fast
         mktemp() do path, io
             write(io, "[globals]\nconnect_timeout = [1,\n")
@@ -328,6 +305,40 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
 
         minimal_target() = Dict{String, Any}("host" => "10.0.0.1", "user" => "u",
                                              "password" => "p", "remote_dir" => "/a/b")
+        function minimal_config(; push=Dict{String, Any}(), pull=Dict{String, Any}(),
+                                targets=Any[minimal_target()],
+                                extra=Dict{String, Any}())
+            sections = Dict{String, Any}("push" =>
+                                             merge(Dict{String, Any}("local_source_dir" => "src"),
+                                                   push),
+                                         "pull" =>
+                                             merge(Dict{String, Any}("local_destination_root" => "harvest"),
+                                                   pull),
+                                         "targets" => targets)
+            return merge(sections, extra)
+        end
+
+        # Target names must be unique because they name the local harvest directories
+        twin(name) = Dict{String, Any}("name" => name, "host" => "10.0.0.1", "user" => "u",
+                                       "password" => "p", "remote_dir" => "/a/b")
+        duplicate_error = try
+            parse_config(minimal_config(;
+                                        targets=Any[twin("Node"), twin("Other"),
+                                                    twin("Node")]))
+            nothing
+        catch err
+            err
+        end
+        @test duplicate_error isa ArgumentError
+        @test occursin("duplicated: Node.", sprint(showerror, duplicate_error))
+        @test parse_config(minimal_config(; targets=Any[twin("Node"), twin("Other")])) isa
+              BridgeConfig
+        same = BridgeTarget("Node", "10.0.0.1", 22, "u", "p", "/a/b")
+        @test_throws ArgumentError BridgeConfig(GlobalOptions(), PushOptions("/x"),
+                                                PullOptions("/y"), [same, same])
+        @test_throws ArgumentError parse_config(minimal_config(;
+                                                               pull=Dict{String, Any}("purge_scope" => "everything")))
+
         function config_error(dict)
             return try
                 parse_config(dict)
@@ -342,84 +353,84 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
             return err isa ArgumentError ? err.msg : ""
         end
 
-        @test parse_config(Dict{String, Any}("targets" => Any[minimal_target()])) isa
-              BridgeConfig
+        @test parse_config(minimal_config()) isa BridgeConfig
         # A purge removes the whole project unless the configuration narrows it
-        @test parse_config(Dict{String, Any}("targets" => Any[minimal_target()])).pull.purge_scope ==
-              :project
+        @test parse_config(minimal_config()).pull.purge_scope == :project
         @test occursin("'typo'",
-                       config_error_message(Dict{String, Any}("typo" => 1,
-                                                              "targets" =>
-                                                                  Any[minimal_target()])))
+                       config_error_message(minimal_config(;
+                                                           extra=Dict{String, Any}("typo" =>
+                                                                                       1))))
         @test occursin("[pull]",
-                       config_error_message(Dict{String, Any}("pull" =>
-                                                                  Dict{String, Any}("purge_scopes" => "output"),
-                                                              "targets" =>
-                                                                  Any[minimal_target()])))
+                       config_error_message(minimal_config(;
+                                                           pull=Dict{String, Any}("purge_scopes" => "output"))))
         @test occursin("[[targets]] entry #1",
-                       config_error_message(Dict{String, Any}("targets" =>
-                                                                  Any[merge(minimal_target(),
-                                                                            Dict("hostname" => "x"))])))
+                       config_error_message(minimal_config(;
+                                                           targets=Any[merge(minimal_target(),
+                                                                             Dict("hostname" => "x"))])))
         @test occursin("must be an integer",
-                       config_error_message(Dict{String, Any}("globals" =>
-                                                                  Dict{String, Any}("connect_timeout" => "10"),
-                                                              "targets" =>
-                                                                  Any[minimal_target()])))
+                       config_error_message(minimal_config(;
+                                                           extra=Dict{String, Any}("globals" =>
+                                                                                       Dict{String,
+                                                                                            Any}("connect_timeout" => "10")))))
         @test occursin("must be an integer",
-                       config_error_message(Dict{String, Any}("targets" =>
-                                                                  Any[merge(minimal_target(),
-                                                                            Dict("port" =>
-                                                                                     true))])))
+                       config_error_message(minimal_config(;
+                                                           targets=Any[merge(minimal_target(),
+                                                                             Dict("port" =>
+                                                                                      true))])))
         @test occursin("must be a boolean",
-                       config_error_message(Dict{String, Any}("globals" =>
-                                                                  Dict{String, Any}("compress" =>
-                                                                                        1),
-                                                              "targets" =>
-                                                                  Any[minimal_target()])))
+                       config_error_message(minimal_config(;
+                                                           extra=Dict{String, Any}("globals" =>
+                                                                                       Dict{String,
+                                                                                            Any}("compress" =>
+                                                                                                     1)))))
         @test occursin("must be a string",
-                       config_error_message(Dict{String, Any}("pull" =>
-                                                                  Dict{String, Any}("purge_scope" =>
-                                                                                        3),
-                                                              "targets" =>
-                                                                  Any[minimal_target()])))
+                       config_error_message(minimal_config(;
+                                                           pull=Dict{String, Any}("purge_scope" =>
+                                                                                      3))))
         @test occursin("array of strings",
-                       config_error_message(Dict{String, Any}("push" =>
-                                                                  Dict{String, Any}("excludes" => "x"),
-                                                              "targets" =>
-                                                                  Any[minimal_target()])))
+                       config_error_message(minimal_config(;
+                                                           push=Dict{String, Any}("excludes" => "x"))))
         @test occursin("Entry #2",
-                       config_error_message(Dict{String, Any}("push" =>
-                                                                  Dict{String, Any}("excludes" =>
-                                                                                        Any["a",
-                                                                                            2]),
-                                                              "targets" =>
-                                                                  Any[minimal_target()])))
+                       config_error_message(minimal_config(;
+                                                           push=Dict{String, Any}("excludes" =>
+                                                                                      Any["a",
+                                                                                          2]))))
         @test occursin("must be a table",
-                       config_error_message(Dict{String, Any}("globals" => 5,
-                                                              "targets" =>
-                                                                  Any[minimal_target()])))
+                       config_error_message(minimal_config(;
+                                                           extra=Dict{String, Any}("globals" =>
+                                                                                       5))))
         @test occursin("array of tables",
-                       config_error_message(Dict{String, Any}("targets" => "x")))
+                       config_error_message(minimal_config(; targets="x")))
         @test occursin("entry #1 must be a table",
-                       config_error_message(Dict{String, Any}("targets" => Any[1])))
+                       config_error_message(minimal_config(; targets=Any[1])))
         for mandatory in ("host", "user", "password", "remote_dir")
             incomplete = minimal_target()
             delete!(incomplete, mandatory)
-            message = config_error_message(Dict{String, Any}("targets" => Any[incomplete]))
+            message = config_error_message(minimal_config(; targets=Any[incomplete]))
             @test occursin("'[[targets]] entry #1.$(mandatory)' is mandatory", message)
         end
 
         # Relative local paths resolve against the configuration directory; ~ expands
-        resolved = parse_config(Dict{String, Any}("push" =>
-                                                      Dict{String, Any}("local_source_dir" => "src"),
-                                                  "pull" =>
-                                                      Dict{String, Any}("local_destination_root" => "~/harvest"),
-                                                  "targets" => Any[minimal_target()]);
+        resolved = parse_config(minimal_config(;
+                                               push=Dict{String, Any}("local_source_dir" => "src"),
+                                               pull=Dict{String, Any}("local_destination_root" => "~/harvest"));
                                 config_dir="/cfg/dir")
         @test resolved.push.local_source_dir == "/cfg/dir/src"
         @test resolved.pull.local_destination_root == joinpath(homedir(), "harvest")
         @test resolved.targets[1].name == "Target-1"
         @test resolved.targets[1].port == 22
+
+        # The local paths are mandatory: nothing deploys or harvests into the directory
+        # of the tool by omission
+        for (section, key) in (("push", "local_source_dir"),
+                               ("pull", "local_destination_root"))
+            without = minimal_config()
+            delete!(without[section], key)
+            @test occursin("'[$(section)].$(key)' is mandatory",
+                           config_error_message(without))
+        end
+        @test_throws ArgumentError parse_config(Dict{String, Any}("targets" =>
+                                                                      Any[minimal_target()]))
     end
 
     @testset "Git Working Tree Requirement" begin

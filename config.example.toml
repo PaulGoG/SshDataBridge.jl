@@ -14,8 +14,8 @@ compress = true  # one of: true | false
 bandwidth_limit = 0  # integer >= 0; units: KB/s; 0 = unlimited
 
 [push]
-# Local source directory to deploy to remotes
-local_source_dir = "."  # path relative to this config file or absolute
+# Local source directory to deploy to remotes (mandatory)
+local_source_dir = "~/projects/sim_batch_01"  # path relative to this config file or absolute; '~' expands
 
 # Array of glob patterns excluded from deployment
 excludes = [
@@ -24,8 +24,6 @@ excludes = [
     ".vscode",
     "*.swp",
     "*~",
-    "data/output",
-    "harvested_results",
     "*.jl.cov",
 ]
 
@@ -36,8 +34,8 @@ use_gitignore = true  # one of: true | false
 require_clean_git = false  # one of: true | false
 
 [pull]
-# Local destination root where harvested outputs are saved
-local_destination_root = "data/harvested_results"  # path relative to this config file or absolute
+# Local destination root: one subdirectory per target, plus the rsync logs (mandatory)
+local_destination_root = "~/campaigns/sim_batch_01/harvest"  # path relative to this config file or absolute; '~' expands
 
 # Default relative output subdirectory on remotes
 output_subdir = "output"  # relative path without '..' segments

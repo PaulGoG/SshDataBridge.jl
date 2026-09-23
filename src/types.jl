@@ -1,5 +1,4 @@
-const DEFAULT_PUSH_EXCLUDES = String[".git", ".github", ".vscode", "*.swp", "*~",
-                                     "data/output", "harvested_results"]
+const DEFAULT_PUSH_EXCLUDES = String[".git", ".github", ".vscode", "*.swp", "*~"]
 const DEFAULT_PULL_EXCLUDES = String["*.tmp", "core.*", "*~"]
 
 """
@@ -126,7 +125,7 @@ end
 Parameters of the deployment of the local source tree to the remote targets.
 
 # Fields
-- `local_source_dir::String`: Local project directory to deploy.
+- `local_source_dir::String`: Local project directory to deploy; mandatory in the configuration.
 - `excludes::Vector{String}`: `rsync` exclude patterns.
 - `require_clean_git::Bool`: Abort when the local git working tree has uncommitted changes.
 - `use_gitignore::Bool`: Honour the `.gitignore` rules of the source tree during deployment.
@@ -154,7 +153,7 @@ end
 Parameters of the retrieval of remote output directories to the local workstation.
 
 # Fields
-- `local_destination_root::String`: Local root under which one directory per target is created.
+- `local_destination_root::String`: Local root under which one directory per target is created; mandatory in the configuration. It also holds the rsync logs of every target, see [`transfer_log_path`](@ref).
 - `output_subdir::String`: Default output directory relative to each target's `remote_dir`.
 - `includes::Vector{String}`: `rsync` include patterns; empty means everything.
 - `excludes::Vector{String}`: `rsync` exclude patterns.
