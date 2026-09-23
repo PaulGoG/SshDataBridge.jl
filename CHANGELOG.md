@@ -8,7 +8,6 @@ All notable changes to this project are documented in this file. The format foll
 
 - A verification pass guards every purge that follows a harvest. The transfer is repeated as `rsync --dry-run --itemize-changes`; when it still reports an item, typically because a job on the node is writing, or when the pass itself fails, nothing is deleted and the target is reported as failed with the pending items named.
 - Every push and pull appends the files it transfers to a per-target log, `local_destination_root/<name>.push.rsync.log` or `<name>.pull.rsync.log`, and the summary line reports the number of files and bytes transferred. The transfer runs with `--stats` instead of `-v`, so its standard output stays bounded whatever the size of the tree, and the log is the record of what was retrieved before a purge.
-- `CITATION.cff` and a citation section in the README.
 
 ### Changed
 

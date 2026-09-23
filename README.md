@@ -20,7 +20,6 @@ SshDataBridge/
 ├── activate.jl            # Activates and instantiates the root environment
 ├── Project.toml
 ├── CHANGELOG.md
-├── CITATION.cff
 └── SECURITY.md
 ```
 
@@ -171,20 +170,6 @@ See `SECURITY.md` for the reporting procedure.
 - Targets are processed by cooperative tasks on one thread, which is sufficient because the work is bound by the network and by rsync itself.
 - No retry logic; rerun the action for the targets that failed.
 
-## How to cite
-
-Citation metadata is in [CITATION.cff](CITATION.cff). BibTeX:
-
-```bibtex
-@software{Gogita_SshDataBridge_2026,
-  author  = {Gogîță, Paul-Adrian},
-  title   = {{SshDataBridge.jl}},
-  year    = {2026},
-  version = {0.2.0},
-  url     = {https://github.com/PaulGoG/SshDataBridge.jl}
-}
-```
-
 ## Repository layout
 
 <details>
@@ -199,7 +184,6 @@ SshDataBridge/
 ├── .gitignore               # Credentials and manifests
 ├── .JuliaFormatter.toml     # YAS style, 92 columns
 ├── CHANGELOG.md             # Release history
-├── CITATION.cff             # Citation metadata
 ├── LICENSE                  # MIT
 ├── Project.toml             # Package metadata; standard-library dependencies only
 ├── README.md
