@@ -494,7 +494,10 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
         push_cmd = build_push_command(target, globals, push_opts)
         @test push_cmd.exec[1:4] == ["sshpass", "-d", "0", "rsync"]
         @test push_cmd.env === nothing
-        @test "-av" in push_cmd.exec
+        @test "-a" in push_cmd.exec
+        @test !("-av" in push_cmd.exec) && !("-v" in push_cmd.exec)
+        @test "--stats" in push_cmd.exec
+        @test !any(startswith("--log-file="), push_cmd.exec)
         @test "--partial" in push_cmd.exec
         @test "-z" in push_cmd.exec
         @test "--bwlimit=2048" in push_cmd.exec
@@ -508,6 +511,10 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
         @test any(occursin("NumberOfPasswordPrompts=1", arg) for arg in push_cmd.exec)
         @test push_cmd.exec[end - 1] == "/local/workspace/"
         @test push_cmd.exec[end] == "worker@10.0.0.5:/srv/sim_01/"
+        logged_push = build_push_command(target, globals, push_opts;
+                                         log_file="/local/harvest/RTX-Node.push.rsync.log")
+        @test "--log-file=/local/harvest/RTX-Node.push.rsync.log" in logged_push.exec
+        @test logged_push.exec[(end - 1):end] == push_cmd.exec[(end - 1):end]
 
         pull_cmd = build_pull_command(target, globals, pull_opts_resume,
                                       "/local/harvest/RTX-Node")
@@ -515,6 +522,48 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
         @test pull_cmd.env === nothing
         @test pull_cmd.exec[end - 1] == "worker@10.0.0.5:/srv/sim_01/results/"
         @test pull_cmd.exec[end] == "/local/harvest/RTX-Node/"
+        @test "--stats" in pull_cmd.exec
+        @test !any(startswith("--log-file="), pull_cmd.exec)
+        logged_pull = build_pull_command(target, globals, pull_opts_resume,
+                                         "/local/harvest/RTX-Node";
+                                         log_file="/local/harvest/RTX-Node.pull.rsync.log")
+        @test "--log-file=/local/harvest/RTX-Node.pull.rsync.log" in logged_pull.exec
+
+        # The verification pass prints nothing but pending items: no statistics, no log
+        verification = SshDataBridge.build_verification_command(target, globals,
+                                                                pull_opts_resume,
+                                                                "/local/harvest/RTX-Node")
+        @test "--dry-run" in verification.exec && "--itemize-changes" in verification.exec
+        @test !("--stats" in verification.exec) && !("-v" in verification.exec)
+        @test !any(startswith("--log-file="), verification.exec)
+
+        log_config = BridgeConfig(globals, push_opts, pull_opts_resume, [target])
+        @test SshDataBridge.transfer_log_path(log_config, target, :pull) ==
+              "/local/harvest/RTX-Node.pull.rsync.log"
+        @test SshDataBridge.transfer_log_path(log_config, target, :push) ==
+              "/local/harvest/RTX-Node.push.rsync.log"
+        @test_throws ArgumentError SshDataBridge.transfer_log_path(log_config, target,
+                                                                   :clean)
+
+        # Statistics parsing and the summary line
+        @test SshDataBridge.transfer_statistics("Number of regular files transferred: 1,234\nTotal transferred file size: 5,368,709 bytes\n") ==
+              (files=1234, bytes=5368709)
+        @test SshDataBridge.transfer_statistics("Number of regular files transferred: 0\nTotal transferred file size: 0 bytes") ==
+              (files=0, bytes=0)
+        @test SshDataBridge.transfer_statistics("") === nothing
+        @test SshDataBridge.transfer_statistics("Number of regular files transferred: 3\n") ===
+              nothing
+        @test SshDataBridge.format_bytes(0) == "0 B"
+        @test SshDataBridge.format_bytes(1023) == "1023 B"
+        @test SshDataBridge.format_bytes(1536) == "1.5 KiB"
+        @test SshDataBridge.format_bytes(5368709) == "5.1 MiB"
+        @test SshDataBridge.format_bytes(2^40) == "1.0 TiB"
+        @test SshDataBridge.transfer_summary("Harvested", 12.3456,
+                                             "Number of regular files transferred: 1\nTotal transferred file size: 512 bytes",
+                                             "/l/x.pull.rsync.log") ==
+              "Harvested successfully in 12.35 s: 1 file, 512 B transferred; log: /l/x.pull.rsync.log."
+        @test SshDataBridge.transfer_summary("Deployed", 0.5, "", "/l/x.push.rsync.log") ==
+              "Deployed successfully in 0.5 s; log: /l/x.push.rsync.log."
 
         # Include patterns narrow the harvest: excludes first, then the directory rule,
         # the includes, and a final catch-all exclude; empty directories are pruned.
@@ -535,8 +584,9 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
                 source = joinpath(dir, "source")
                 mkpath(joinpath(source, "nested"))
                 mkpath(joinpath(source, "empty"))
-                for name in ("a.csv", "b.txt", "c.tmp", joinpath("nested", "d.csv"),
-                             joinpath("nested", "e.txt"))
+                source_names = ("a.csv", "b.txt", "c.tmp", joinpath("nested", "d.csv"),
+                                joinpath("nested", "e.txt"))
+                for name in source_names
                     write(joinpath(source, name), name)
                 end
                 harvested = String[]
@@ -554,6 +604,27 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
                     end
                     @test sort(harvested) == expected
                 end
+
+                # The transfer flags make rsync list every file in the log and print the
+                # statistics block that the package parses; a repeated run appends
+                destination = mktempdir(dir)
+                log_file = joinpath(dir, "logs", "node.pull.rsync.log")
+                mkpath(dirname(log_file))
+                flags = vcat(["-a", "--partial"],
+                             SshDataBridge.transfer_arguments(log_file))
+                outcome = SshDataBridge.run_captured(`rsync $(flags) $(source)/ $(destination)/`)
+                @test outcome.exitcode == 0
+                expected_bytes = sum(filesize(joinpath(source, name))
+                                     for name in source_names)
+                @test SshDataBridge.transfer_statistics(outcome.stdout) ==
+                      (files=length(source_names), bytes=expected_bytes)
+                logged = read(log_file, String)
+                @test occursin(">f+++++++++ a.csv", logged)
+                @test occursin("nested/d.csv", logged)
+                outcome = SshDataBridge.run_captured(`rsync $(flags) $(source)/ $(destination)/`)
+                @test SshDataBridge.transfer_statistics(outcome.stdout) ==
+                      (files=0, bytes=0)
+                @test count("building file list", read(log_file, String)) == 2
             end
         end
 
@@ -712,6 +783,30 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
                 @test results[1].exit_code == 0
             end
 
+            # The statistics block of rsync becomes the summary line; the log path is named
+            statistics = "Number of regular files transferred: 12\nTotal transferred file size: 3,145,728 bytes\n"
+            push_log = joinpath(harvest_root, "Node-A.push.rsync.log")
+            with_stub_binaries(; stdout_text=statistics) do args_file
+                result = push_target(target, config)
+                @test result.success
+                @test result.message ==
+                      "Deployed successfully in $(round(result.duration_seconds; digits=2)) s: 12 files, 3.0 MiB transferred; log: $(push_log)."
+                invocations = recorded_invocations(args_file)
+                @test length(invocations) == 2
+                @test occursin("rsync -a --partial --stats --log-file=$(push_log) -e ",
+                               invocations[2])
+                @test !occursin("-av", invocations[2])
+            end
+
+            # The log directory is created before the remote is contacted
+            fresh_root = joinpath(harvest_root, "fresh")
+            fresh_config = BridgeConfig(globals, push_opts, PullOptions(fresh_root),
+                                        [target])
+            with_stub_binaries() do _
+                @test push_target(target, fresh_config).success
+                @test isdir(fresh_root)
+            end
+
             # A source tree that does not exist is refused before any target is contacted
             absent_config = BridgeConfig(globals,
                                          PushOptions(joinpath(harvest_root, "absent")),
@@ -744,6 +839,15 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
                 @test only(pull_all_targets(blocked_config)).success == false
             end
 
+            # A log directory that cannot be created fails the push before any contact
+            with_stub_binaries() do args_file
+                result = push_target(target, blocked_config)
+                @test !result.success
+                @test result.exit_code == -1
+                @test occursin("Log directory refusal", result.message)
+                @test isempty(recorded_invocations(args_file))
+            end
+
             # A purge follows a verified harvest: transfer, verification pass, removal of
             # the whole project directory
             with_stub_binaries() do args_file
@@ -753,9 +857,14 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
                 @test occursin("purged", result.message)
                 invocations = recorded_invocations(args_file)
                 @test length(invocations) == 3
-                @test occursin("rsync -av --partial", invocations[1])
+                pull_log = joinpath(harvest_root, "Node-A.pull.rsync.log")
+                @test occursin("rsync -a --partial --stats --log-file=$(pull_log) -e ",
+                               invocations[1])
+                @test occursin("; log: $(pull_log).", result.message)
                 @test occursin("rsync -a --partial", invocations[2])
                 @test occursin("--dry-run --itemize-changes", invocations[2])
+                @test !occursin("--stats", invocations[2])
+                @test !occursin("--log-file", invocations[2])
                 @test occursin("rm -rf -- '/rem/sim a'", invocations[3])
                 @test !occursin("/output", invocations[3])
             end
@@ -802,7 +911,10 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
 
             # Without a requested purge no verification pass runs
             with_stub_binaries() do args_file
-                @test pull_target(target, config).success
+                result = pull_target(target, config)
+                @test result.success
+                @test occursin("; log: $(joinpath(harvest_root, "Node-A.pull.rsync.log")).",
+                               result.message)
                 @test length(recorded_invocations(args_file)) == 1
             end
 
@@ -891,12 +1003,18 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
         @test all(r -> r.success, push_results)
         @test all(r -> r.action == :push, push_results)
         @test all(r -> occursin("Dry run: sshpass -d 0 rsync", r.message), push_results)
+        @test occursin("--stats --log-file=/local/dst/Node-A.push.rsync.log",
+                       push_results[1].message)
+        @test occursin("--log-file=/local/dst/Node-B.push.rsync.log",
+                       push_results[2].message)
 
         pull_results = pull_all_targets(config; dry_run=true, clean_remote=true)
         @test length(pull_results) == 2
         @test all(r -> r.success, pull_results)
         @test all(r -> r.action == :pull, pull_results)
         @test all(r -> occursin("Dry run: sshpass -d 0 rsync", r.message), pull_results)
+        @test occursin("--stats --log-file=/local/dst/Node-A.pull.rsync.log",
+                       pull_results[1].message)
         @test all(r -> occursin("post-pull purge of '/rem/sim_", r.message), pull_results)
         @test occursin("post-pull purge of '/rem/sim_a' after a verification pass",
                        pull_results[1].message)

@@ -20,29 +20,66 @@ function rsync_host(host::AbstractString)::String
 end
 
 """
-    rsync_base_arguments(globals::GlobalOptions; archive_flags="-av")::Vector{String}
+    rsync_base_arguments(globals::GlobalOptions)::Vector{String}
 
 Leading arguments shared by every `rsync` invocation: the `sshpass` prefix, the archive
-and resumption flags, and the optional compression and bandwidth settings.
+and resumption flags, and the optional compression and bandwidth settings. `-v` is not
+among them: a transfer records its file list in a log file instead, see
+[`transfer_log_path`](@ref).
 """
-function rsync_base_arguments(globals::GlobalOptions;
-                              archive_flags::AbstractString="-av")::Vector{String}
-    args = String["sshpass", "-d", "0", "rsync", String(archive_flags), "--partial"]
+function rsync_base_arguments(globals::GlobalOptions)::Vector{String}
+    args = String["sshpass", "-d", "0", "rsync", "-a", "--partial"]
     globals.compress && push!(args, "-z")
     globals.bandwidth_limit > 0 && push!(args, "--bwlimit=$(globals.bandwidth_limit)")
     return args
 end
 
 """
+    transfer_log_path(config::BridgeConfig, target::BridgeTarget, action::Symbol)::String
+
+Local `rsync` log of `action` (`:push` or `:pull`) for `target`:
+`<local_destination_root>/<name>.<action>.rsync.log`. `rsync` appends to it, so the file
+accumulates every transfer of the campaign for that target: one timestamped line per
+transferred file and the statistics block of each run. Throws `ArgumentError` for any
+other `action`.
+"""
+function transfer_log_path(config::BridgeConfig, target::BridgeTarget,
+                           action::Symbol)::String
+    if !(action in (:push, :pull))
+        throw(ArgumentError("transfer_log_path expects :push or :pull (received: :$(action))."))
+    end
+    return joinpath(config.pull.local_destination_root,
+                    "$(target.name).$(action).rsync.log")
+end
+
+"""
+    transfer_arguments(log_file::Union{AbstractString, Nothing})::Vector{String}
+
+Arguments that distinguish a transfer from its verification pass: `--stats`, so that
+`rsync` prints its statistics block on standard output, and `--log-file=<log_file>` when
+a log file is given.
+"""
+function transfer_arguments(log_file::Union{AbstractString, Nothing})::Vector{String}
+    args = String["--stats"]
+    log_file === nothing || push!(args, "--log-file=$(log_file)")
+    return args
+end
+
+"""
     build_push_command(target::BridgeTarget, globals::GlobalOptions,
-                       push_opts::PushOptions)::Cmd
+                       push_opts::PushOptions;
+                       log_file::Union{AbstractString, Nothing}=nothing)::Cmd
 
 Construct the `rsync` invocation that deploys the local source tree to `target`. The
-password is not part of the command; [`run_authenticated`](@ref) supplies it.
+password is not part of the command; [`run_authenticated`](@ref) supplies it. With
+`log_file`, `rsync` appends the list of transferred files to that file, see
+[`transfer_log_path`](@ref).
 """
 function build_push_command(target::BridgeTarget, globals::GlobalOptions,
-                            push_opts::PushOptions)::Cmd
+                            push_opts::PushOptions;
+                            log_file::Union{AbstractString, Nothing}=nothing)::Cmd
     args = rsync_base_arguments(globals)
+    append!(args, transfer_arguments(log_file))
     push!(args, "-e", build_ssh_rsh_string(target, globals))
     push_opts.use_gitignore && push!(args, "--filter=:- .gitignore")
     for pattern in push_opts.excludes
@@ -78,15 +115,21 @@ end
 
 """
     build_pull_command(target::BridgeTarget, globals::GlobalOptions,
-                       pull_opts::PullOptions, local_target_dir::AbstractString)::Cmd
+                       pull_opts::PullOptions, local_target_dir::AbstractString;
+                       log_file::Union{AbstractString, Nothing}=nothing)::Cmd
 
 Construct the `rsync` invocation that retrieves the remote output directory of `target`
 into `local_target_dir`, with the filter rules of [`pull_filter_arguments`](@ref). The
-password is not part of the command; [`run_authenticated`](@ref) supplies it.
+password is not part of the command; [`run_authenticated`](@ref) supplies it. With
+`log_file`, `rsync` appends the list of transferred files to that file, see
+[`transfer_log_path`](@ref).
 """
 function build_pull_command(target::BridgeTarget, globals::GlobalOptions,
-                            pull_opts::PullOptions, local_target_dir::AbstractString)::Cmd
-    return Cmd(append!(rsync_base_arguments(globals),
+                            pull_opts::PullOptions, local_target_dir::AbstractString;
+                            log_file::Union{AbstractString, Nothing}=nothing)::Cmd
+    args = rsync_base_arguments(globals)
+    append!(args, transfer_arguments(log_file))
+    return Cmd(append!(args,
                        pull_endpoint_arguments(target, globals, pull_opts,
                                                local_target_dir)))
 end
@@ -121,7 +164,7 @@ output is empty exactly when the local harvest is complete.
 function build_verification_command(target::BridgeTarget, globals::GlobalOptions,
                                     pull_opts::PullOptions,
                                     local_target_dir::AbstractString)::Cmd
-    args = rsync_base_arguments(globals; archive_flags="-a")
+    args = rsync_base_arguments(globals)
     push!(args, "--dry-run", "--itemize-changes")
     return Cmd(append!(args,
                        pull_endpoint_arguments(target, globals, pull_opts,
@@ -194,18 +237,89 @@ function prepare_local_pull_directory(target::BridgeTarget, pull_opts::PullOptio
 end
 
 """
+    transfer_statistics(stdout::AbstractString)
+
+Parse the statistics block that `rsync --stats` prints: returns `(; files, bytes)`, the
+number of regular files transferred and the total transferred file size in bytes, or
+`nothing` when either line is absent. Thousands separators, which `rsync` 3.1 and later
+print by default, are accepted.
+
+# Example
+```julia
+julia> transfer_statistics("Number of regular files transferred: 1,234\\nTotal transferred file size: 5,368,709 bytes\\n")
+(files = 1234, bytes = 5368709)
+```
+"""
+function transfer_statistics(stdout::AbstractString)
+    files = match(r"Number of regular files transferred:\s*([\d,]+)", stdout)
+    bytes = match(r"Total transferred file size:\s*([\d,]+)\s*bytes", stdout)
+    (files === nothing || bytes === nothing) && return nothing
+    parse_count(capture) = parse(Int, replace(capture, "," => ""))
+    return (; files=parse_count(files[1]), bytes=parse_count(bytes[1]))
+end
+
+"""
+    format_bytes(n::Integer)::String
+
+Render a byte count with a binary prefix and one decimal: `512 B`, `1.5 KiB`, `5.1 MiB`.
+"""
+function format_bytes(n::Integer)::String
+    n < 1024 && return "$(n) B"
+    units = ("KiB", "MiB", "GiB", "TiB", "PiB")
+    value = n / 1024
+    index = 1
+    while value >= 1024 && index < length(units)
+        value /= 1024
+        index += 1
+    end
+    return "$(round(value; digits=1)) $(units[index])"
+end
+
+"""
+    transfer_summary(verb::AbstractString, duration::Real, stdout::AbstractString,
+                     log_file::AbstractString)::String
+
+Success message of a transfer: `"<verb> successfully in <duration> s: <files> files,
+<size> transferred; log: <log_file>."`, or without the file count and size when
+[`transfer_statistics`](@ref) finds no statistics block in `stdout`.
+"""
+function transfer_summary(verb::AbstractString, duration::Real, stdout::AbstractString,
+                          log_file::AbstractString)::String
+    statistics = transfer_statistics(stdout)
+    detail = if statistics === nothing
+        ""
+    else
+        plural = statistics.files == 1 ? "" : "s"
+        ": $(statistics.files) file$(plural), $(format_bytes(statistics.bytes)) transferred"
+    end
+    return "$(verb) successfully in $(round(duration; digits=2)) s$(detail); log: $(log_file)."
+end
+
+"""
     push_target(target::BridgeTarget, config::BridgeConfig; dry_run::Bool=false)::TransferResult
 
 Deploy the local source tree to a single target. The remote base directory is created
-first; a failure there is reported before `rsync` is attempted.
+first; a failure there is reported before `rsync` is attempted. The directory of the log
+file (`local_destination_root`) is created before the remote is contacted, and a failure
+there is reported as a failed result. On success the message carries the number of files
+and bytes transferred and the path of the log.
 """
 function push_target(target::BridgeTarget, config::BridgeConfig;
                      dry_run::Bool=false)::TransferResult
     t_start = time()
-    cmd = build_push_command(target, config.globals, config.push)
+    log_file = transfer_log_path(config, target, :push)
+    cmd = build_push_command(target, config.globals, config.push; log_file=log_file)
     if dry_run
         return TransferResult(target, :push, true, 0, 0.0,
                               "Dry run: $(command_string(cmd))")
+    end
+
+    try
+        mkpath(dirname(log_file))
+    catch err
+        err isa Base.IOError || rethrow()
+        return TransferResult(target, :push, false, -1, time() - t_start,
+                              "Log directory refusal: $(sprint(showerror, err))")
     end
 
     directory = ensure_remote_directory(target, config.globals, target.remote_dir)
@@ -223,7 +337,7 @@ function push_target(target::BridgeTarget, config::BridgeConfig;
     end
     duration = time() - t_start
     success = outcome.exitcode == 0
-    message = success ? "Deployed successfully in $(round(duration; digits=2)) s." :
+    message = success ? transfer_summary("Deployed", duration, outcome.stdout, log_file) :
               "rsync exited with code $(outcome.exitcode): $(strip(outcome.stderr))"
     return TransferResult(target, :push, success, outcome.exitcode, duration, message)
 end
@@ -242,7 +356,9 @@ the requested purge did not happen. A purge that fails is reported the same way.
 is skipped, and the reason reported, when `config.pull.includes` narrows the harvest,
 because files left unharvested by the filter would otherwise be destroyed. A local
 destination that cannot be prepared (collision refusal or file-system error) is reported
-as a failed result.
+as a failed result. The files transferred are appended to the log of
+[`transfer_log_path`](@ref), which is the record of what was retrieved before any purge;
+the message carries the number of files and bytes transferred and the path of the log.
 """
 function pull_target(target::BridgeTarget, config::BridgeConfig; dry_run::Bool=false,
                      clean_remote::Union{Bool, Nothing}=nothing)::TransferResult
@@ -252,9 +368,11 @@ function pull_target(target::BridgeTarget, config::BridgeConfig; dry_run::Bool=f
     scope = config.pull.purge_scope
     filtered = !isempty(config.pull.includes)
     local_dir = joinpath(config.pull.local_destination_root, target.name)
+    log_file = transfer_log_path(config, target, :pull)
 
     if dry_run
-        cmd = build_pull_command(target, config.globals, config.pull, local_dir)
+        cmd = build_pull_command(target, config.globals, config.pull, local_dir;
+                                 log_file=log_file)
         clean_note = if !should_clean
             ""
         elseif filtered
@@ -273,7 +391,8 @@ function pull_target(target::BridgeTarget, config::BridgeConfig; dry_run::Bool=f
         return TransferResult(target, :pull, false, -1, time() - t_start,
                               "Destination refusal: $(sprint(showerror, err))")
     end
-    cmd = build_pull_command(target, config.globals, config.pull, dest_dir)
+    cmd = build_pull_command(target, config.globals, config.pull, dest_dir;
+                             log_file=log_file)
     outcome = try
         run_authenticated(cmd, target.password)
     catch err
@@ -287,7 +406,7 @@ function pull_target(target::BridgeTarget, config::BridgeConfig; dry_run::Bool=f
                               "rsync exited with code $(outcome.exitcode): $(strip(outcome.stderr))")
     end
 
-    message = "Harvested successfully in $(round(duration; digits=2)) s."
+    message = transfer_summary("Harvested", duration, outcome.stdout, log_file)
     if !should_clean
         return TransferResult(target, :pull, true, outcome.exitcode, duration, message)
     end

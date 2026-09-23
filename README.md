@@ -82,7 +82,7 @@ SshDataBridge.main(["probe", "--config", "config.toml"])
 | Component | Status |
 |---|---|
 | TOML configuration parser and field validation | Stable |
-| `probe`, `push`, `pull` | Stable; covered by process tests against stub binaries |
+| `probe`, `push`, `pull` | Stable; covered by process tests against stub binaries; every transfer logged per target |
 | `clean` and the post-harvest purge | Stable; `--yes` gate, path denylist, and harvest verification covered by tests |
 | Credential delivery to `sshpass` over standard input | Stable; redaction asserted by the test suite and the sandbox |
 | `push --delete`, retries, key-based authentication | Not implemented |
@@ -101,7 +101,7 @@ flowchart LR
     cli -->|"probe and clean, ssh"| nodes
 ```
 
-Every action runs on all targets concurrently and reports per target, so one unreachable node does not stop the rest. A purge removes the whole project directory from the node unless `purge_scope` narrows it to the output directory. After a harvest it runs only once a verification pass has found the local copy complete, and never after a harvest narrowed by include patterns. [Actions](#actions) has the details.
+Every action runs on all targets concurrently and reports per target, so one unreachable node does not stop the rest. Every push and pull appends the files it transfers to a per-target log under `local_destination_root` and reports the number of files and bytes transferred. A purge removes the whole project directory from the node unless `purge_scope` narrows it to the output directory. After a harvest it runs only once a verification pass has found the local copy complete, and never after a harvest narrowed by include patterns. [Actions](#actions) has the details.
 
 ## Configuration
 
@@ -144,9 +144,9 @@ strict_host_key_checking = "accept-new"   # optional override
 
 **probe** runs a short shell script on every target over ssh and reports whether the host answered, whether `rsync` is installed there, and whether the base and output directories exist. Nothing is modified.
 
-**push** creates `remote_dir` if needed and runs `rsync -av --partial` from `local_source_dir`, which must exist, to it. With `use_gitignore` the `.gitignore` rules of the source tree are applied through a dir-merge filter, so data, plots, and build products of the deployed project stay local without duplicating the rules in `excludes`. Files removed locally are not removed remotely, because `--delete` is deliberately not used. With `require_clean_git` the source tree must be a git working tree without uncommitted changes; the check also applies to dry runs.
+**push** creates `remote_dir` if needed and runs `rsync -a --partial` from `local_source_dir`, which must exist, to it. The files transferred are appended to `local_destination_root/<name>.push.rsync.log`, and the summary line reports how many files and bytes were transferred. With `use_gitignore` the `.gitignore` rules of the source tree are applied through a dir-merge filter, so data, plots, and build products of the deployed project stay local without duplicating the rules in `excludes`. Files removed locally are not removed remotely, because `--delete` is deliberately not used. With `require_clean_git` the source tree must be a git working tree without uncommitted changes; the check also applies to dry runs.
 
-**pull** retrieves `remote_dir/output_subdir/` of every target into `local_destination_root/<name>/`. `--partial` resumes interrupted transfers. With `includes` set, only files matching one of the patterns are harvested and directories left empty are skipped; `excludes` take precedence over `includes`. When the local directory already exists, `collision_strategy` decides: `resume` reuses it, `backup` renames it to `<name>#1`, `<name>#2`, ... before creating a fresh one, `abort` fails the target. A destination that cannot be created fails that target only.
+**pull** retrieves `remote_dir/output_subdir/` of every target into `local_destination_root/<name>/`. `--partial` resumes interrupted transfers. The files transferred are appended to `local_destination_root/<name>.pull.rsync.log`; the summary line reports the file count and size, and the log is the record of what was retrieved before any purge. With `includes` set, only files matching one of the patterns are harvested and directories left empty are skipped; `excludes` take precedence over `includes`. When the local directory already exists, `collision_strategy` decides: `resume` reuses it, `backup` renames it to `<name>#1`, `<name>#2`, ... before creating a fresh one, `abort` fails the target. A destination that cannot be created fails that target only.
 
 **clean** removes the directory selected by `purge_scope` with `rm -rf`: the whole `remote_dir` by default, because a campaign deploys code that is not meant to stay on the nodes, or only the output directory with `"output"`. The same purge runs after a pull when `--clean-remote` is given or `clean_remote_after_pull` is set, but only once the harvest is verified: the transfer is repeated as `rsync --dry-run --itemize-changes`, and any item it still reports, typically because a job is writing, keeps the remote directory and fails that target although its data were retrieved. Rerun the pull once the node is idle. A purge destroys everything in its scope that the harvest did not copy: files matching `excludes` and, with the `project` scope, everything outside `output_subdir`. Every purge outside a dry run requires `--yes` on the command line. The path is validated first: it must be absolute, at least two components deep, free of `..`, and neither `/`, `/root`, `/home`, the user's home directory, nor anything under `/usr`, `/etc`, `/var`, and the other system directories. A purge is never issued after a harvest narrowed by `includes`, because files the filter left behind would be lost.
 
