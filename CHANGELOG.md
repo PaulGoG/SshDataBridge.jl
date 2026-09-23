@@ -4,6 +4,8 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-23
+
 ### Added
 
 - A verification pass guards every purge that follows a harvest. The transfer is repeated as `rsync --dry-run --itemize-changes`; when it still reports an item, typically because a job on the node is writing, or when the pass itself fails, nothing is deleted and the target is reported as failed with the pending items named.
@@ -51,6 +53,7 @@ All notable changes to this project are documented in this file. The format foll
 - Optional clean-git-tree requirement for deployments, evaluated in the configured source directory.
 - Test suite with static analysis (Aqua, JET, ExplicitImports) and a stub-binary harness that exercises the process execution paths without network access; formatting enforced by a dedicated `format/` environment and CI job.
 
-[Unreleased]: https://github.com/PaulGoG/SshDataBridge.jl/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/PaulGoG/SshDataBridge.jl/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/PaulGoG/SshDataBridge.jl/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/PaulGoG/SshDataBridge.jl/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/PaulGoG/SshDataBridge.jl/releases/tag/v0.1.0
