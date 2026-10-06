@@ -153,9 +153,14 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
         @test g_valid.strict_host_key_checking == "yes"
         @test g_valid.compress == true
         @test g_valid.bandwidth_limit == 5000
+        @test g_valid.server_alive_interval == 15
+        @test g_valid.server_alive_count_max == 3
+        @test GlobalOptions(10, "yes", true, 0, 0, 1).server_alive_interval == 0
         @test_throws ArgumentError GlobalOptions(0, "accept-new", true, 0)
         @test_throws ArgumentError GlobalOptions(10, "invalid_policy", true, 0)
         @test_throws ArgumentError GlobalOptions(10, "accept-new", true, -10)
+        @test_throws ArgumentError GlobalOptions(10, "accept-new", true, 0, -1, 3)
+        @test_throws ArgumentError GlobalOptions(10, "accept-new", true, 0, 15, 0)
 
         p_valid = PushOptions("/local/src", ["*.tmp"], true, true)
         @test p_valid.local_source_dir == "/local/src"
@@ -213,6 +218,8 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
         strict_host_key_checking = "yes"
         compress = false
         bandwidth_limit = 1024
+        server_alive_interval = 30
+        server_alive_count_max = 4
 
         [push]
         local_source_dir = "./src_payload"
@@ -256,6 +263,8 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
             @test config.globals.strict_host_key_checking == "yes"
             @test config.globals.compress == false
             @test config.globals.bandwidth_limit == 1024
+            @test config.globals.server_alive_interval == 30
+            @test config.globals.server_alive_count_max == 4
 
             @test occursin("src_payload", config.push.local_source_dir)
             @test config.push.excludes == [".git", "data/output"]
@@ -356,6 +365,21 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
         @test parse_config(minimal_config()) isa BridgeConfig
         # A purge removes the whole project unless the configuration narrows it
         @test parse_config(minimal_config()).pull.purge_scope == :project
+        # ssh keepalive is on unless the configuration disables it
+        @test parse_config(minimal_config()).globals.server_alive_interval == 15
+        @test parse_config(minimal_config()).globals.server_alive_count_max == 3
+        @test occursin("server_alive_interval",
+                       config_error_message(minimal_config(;
+                                                           extra=Dict{String, Any}("globals" =>
+                                                                                       Dict{String,
+                                                                                            Any}("server_alive_interval" =>
+                                                                                                     true)))))
+        @test occursin("server_alive_count_max",
+                       config_error_message(minimal_config(;
+                                                           extra=Dict{String, Any}("globals" =>
+                                                                                       Dict{String,
+                                                                                            Any}("server_alive_count_max" =>
+                                                                                                     0)))))
         @test occursin("'typo'",
                        config_error_message(minimal_config(;
                                                            extra=Dict{String, Any}("typo" =>
@@ -509,6 +533,8 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
         @test any(occursin("StrictHostKeyChecking=accept-new", arg)
                   for arg in push_cmd.exec)
         @test any(occursin("NumberOfPasswordPrompts=1", arg) for arg in push_cmd.exec)
+        rsh = push_cmd.exec[findfirst(==("-e"), push_cmd.exec) + 1]
+        @test occursin("-o ServerAliveInterval=15 -o ServerAliveCountMax=3", rsh)
         @test push_cmd.exec[end - 1] == "/local/workspace/"
         @test push_cmd.exec[end] == "worker@10.0.0.5:/srv/sim_01/"
         logged_push = build_push_command(target, globals, push_opts;
@@ -646,6 +672,17 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
                                                     SshDataBridge.build_probe_script(spaced))
         @test probe_cmd.exec[1:5] == ["sshpass", "-d", "0", "ssh", "-n"]
         @test "NumberOfPasswordPrompts=1" in probe_cmd.exec
+        @test "ServerAliveInterval=15" in probe_cmd.exec
+        @test "ServerAliveCountMax=3" in probe_cmd.exec
+
+        # server_alive_interval = 0 leaves keepalive to the ssh client configuration
+        no_keepalive = GlobalOptions(12, "accept-new", true, 2048, 0, 3)
+        @test isempty(SshDataBridge.keepalive_options(no_keepalive))
+        @test !any(occursin("ServerAlive", arg)
+                   for arg in build_push_command(target, no_keepalive, push_opts).exec)
+        @test !any(occursin("ServerAlive", arg)
+                   for arg in SshDataBridge.build_ssh_command(target, no_keepalive,
+                                                   "true").exec)
         @test occursin("test -d '/srv/sim a'", probe_cmd.exec[end])
         @test occursin("test -d '/srv/sim a/out b'", probe_cmd.exec[end])
 

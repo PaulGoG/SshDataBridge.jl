@@ -112,6 +112,8 @@ connect_timeout = 10                  # integer > 0; units: s
 strict_host_key_checking = "accept-new"   # one of: "accept-new" | "yes" | "no"
 compress = true                       # rsync -z
 bandwidth_limit = 0                   # integer >= 0; units: KB/s; 0 = unlimited
+server_alive_interval = 15            # integer >= 0; units: s; 0 = ssh client configuration decides
+server_alive_count_max = 3            # integer >= 1; unanswered keepalives before ssh disconnects
 
 [push]
 local_source_dir = "~/projects/sim_batch_01"   # mandatory; directory deployed to every target
@@ -157,7 +159,7 @@ The password of each target is read from `config.toml` into memory. Every remote
 
 What remains is inherent to password authentication on a shared account: any process running as the same user can read `config.toml` and could attach to `sshpass` while it runs. Keep the file at mode 0600 and prefer key-based authentication where the nodes allow it.
 
-Host keys follow `strict_host_key_checking`: `accept-new` (default) records a host on first contact and refuses a changed key afterwards, `yes` refuses unknown hosts, `no` disables verification and is only acceptable for throwaway test clusters. Every ssh invocation is limited to one password prompt and uses `-n`, so a remote command can never read from the local terminal.
+Host keys follow `strict_host_key_checking`: `accept-new` (default) records a host on first contact and refuses a changed key afterwards, `yes` refuses unknown hosts, `no` disables verification and is only acceptable for throwaway test clusters. Every ssh invocation is limited to one password prompt and uses `-n`, so a remote command can never read from the local terminal. Every ssh connection, including the transport of rsync, sends a keepalive request after `server_alive_interval` seconds without traffic from the server and gives up after `server_alive_count_max` unanswered requests, so a connection lost to a suspended workstation, a network change, or a dropped NAT mapping fails the target after about a minute instead of blocking it for up to two hours. Rerun the action; a pull resumes where it stopped. With `server_alive_interval = 0` no keepalive option is passed and the ssh client configuration applies.
 
 See `SECURITY.md` for the reporting procedure.
 

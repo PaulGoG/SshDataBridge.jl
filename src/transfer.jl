@@ -1,12 +1,17 @@
 """
     build_ssh_rsh_string(target::BridgeTarget, globals::GlobalOptions)::String
 
-Construct the remote-shell string passed to `rsync -e`.
+Construct the remote-shell string passed to `rsync -e`. It carries the keepalive options
+of [`keepalive_options`](@ref), so a stalled connection ends the transfer with a non-zero
+exit status instead of blocking it.
 """
 function build_ssh_rsh_string(target::BridgeTarget, globals::GlobalOptions)::String
     policy = resolve_target_policy(target, globals)
-    return "ssh -p $(target.port) -o StrictHostKeyChecking=$(policy) " *
-           "-o ConnectTimeout=$(globals.connect_timeout) -o NumberOfPasswordPrompts=1"
+    return join(String["ssh", "-p", string(target.port),
+                       "-o", "StrictHostKeyChecking=$(policy)",
+                       "-o", "ConnectTimeout=$(globals.connect_timeout)",
+                       keepalive_options(globals)...,
+                       "-o", "NumberOfPasswordPrompts=1"], ' ')
 end
 
 """

@@ -25,6 +25,20 @@ function resolve_target_policy(target::BridgeTarget, globals::GlobalOptions)::St
 end
 
 """
+    keepalive_options(globals::GlobalOptions)::Vector{String}
+
+ssh options that drop a connection the server has stopped answering:
+`-o ServerAliveInterval=<s> -o ServerAliveCountMax=<n>`. Empty when
+`server_alive_interval` is `0`, so that the ssh client configuration applies; an explicit
+`ServerAliveInterval=0` on the command line would override it.
+"""
+function keepalive_options(globals::GlobalOptions)::Vector{String}
+    globals.server_alive_interval == 0 && return String[]
+    return String["-o", "ServerAliveInterval=$(globals.server_alive_interval)",
+                  "-o", "ServerAliveCountMax=$(globals.server_alive_count_max)"]
+end
+
+"""
     build_ssh_command(target::BridgeTarget, globals::GlobalOptions,
                       remote_command::AbstractString)::Cmd
 
@@ -38,6 +52,7 @@ function build_ssh_command(target::BridgeTarget, globals::GlobalOptions,
     return Cmd(String["sshpass", "-d", "0", "ssh", "-n", "-p", string(target.port),
                       "-o", "StrictHostKeyChecking=$(policy)",
                       "-o", "ConnectTimeout=$(globals.connect_timeout)",
+                      keepalive_options(globals)...,
                       "-o", "BatchMode=no",
                       "-o", "NumberOfPasswordPrompts=1",
                       "$(target.user)@$(target.host)",

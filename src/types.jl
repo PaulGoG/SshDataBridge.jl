@@ -102,20 +102,35 @@ Transport parameters shared by all targets.
 - `strict_host_key_checking::String`: Default host key policy (`"accept-new"`, `"yes"`, `"no"`).
 - `compress::Bool`: Whether `rsync` compresses in flight (`-z`).
 - `bandwidth_limit::Int`: Bandwidth cap in KB/s per transfer; `0` means unlimited.
+- `server_alive_interval::Int`: Seconds of silence from the server after which ssh sends
+  a keepalive request (`ServerAliveInterval`); `0` leaves keepalive to the ssh client
+  configuration.
+- `server_alive_count_max::Int`: Unanswered keepalive requests after which ssh drops the
+  connection (`ServerAliveCountMax`).
+
+ssh abandons a connection after `server_alive_interval * (server_alive_count_max + 1)`
+seconds without an answer from the server, 60 s with the defaults, so the transfer or
+remote command fails instead of blocking.
 """
 struct GlobalOptions
     connect_timeout::Int
     strict_host_key_checking::String
     compress::Bool
     bandwidth_limit::Int
+    server_alive_interval::Int
+    server_alive_count_max::Int
 
     function GlobalOptions(connect_timeout::Integer=10,
                            strict_host_key_checking::AbstractString="accept-new",
                            compress::Bool=true,
-                           bandwidth_limit::Integer=0)
-        validate_global_options(connect_timeout, strict_host_key_checking, bandwidth_limit)
+                           bandwidth_limit::Integer=0,
+                           server_alive_interval::Integer=DEFAULT_SERVER_ALIVE_INTERVAL,
+                           server_alive_count_max::Integer=DEFAULT_SERVER_ALIVE_COUNT_MAX)
+        validate_global_options(connect_timeout, strict_host_key_checking, bandwidth_limit,
+                                server_alive_interval, server_alive_count_max)
         return new(Int(connect_timeout), String(strict_host_key_checking), compress,
-                   Int(bandwidth_limit))
+                   Int(bandwidth_limit), Int(server_alive_interval),
+                   Int(server_alive_count_max))
     end
 end
 

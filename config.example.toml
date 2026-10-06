@@ -13,6 +13,12 @@ compress = true  # one of: true | false
 # rsync bandwidth limit per transfer
 bandwidth_limit = 0  # integer >= 0; units: KB/s; 0 = unlimited
 
+# Interval of ssh keepalive requests to an unresponsive server
+server_alive_interval = 15  # integer >= 0; units: s; 0 = ssh client configuration decides
+
+# Unanswered keepalive requests before ssh drops the connection
+server_alive_count_max = 3  # integer >= 1
+
 [push]
 # Local source directory to deploy to remotes (mandatory)
 local_source_dir = "~/projects/sim_batch_01"  # path relative to this config file or absolute; '~' expands

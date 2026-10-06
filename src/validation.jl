@@ -6,6 +6,12 @@ const VALID_PURGE_SCOPES = (:output, :project)
 # project directory unless the configuration narrows it.
 const DEFAULT_PURGE_SCOPE = :project
 
+# ssh keepalive: ssh drops a connection after interval * (count_max + 1) seconds without an
+# answer from the server, 60 s here, instead of letting it block a transfer for up to
+# about two hours (Linux TCP keepalive defaults).
+const DEFAULT_SERVER_ALIVE_INTERVAL = 15
+const DEFAULT_SERVER_ALIVE_COUNT_MAX = 3
+
 const HOSTNAME_PATTERN = r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\.?$"
 const IPV6_PATTERN = r"^\[?(?=[0-9A-Fa-f:.]*[0-9A-Fa-f])[0-9A-Fa-f]{0,4}(?::[0-9A-Fa-f]{0,4}){2,7}(?:\.[0-9]{1,3}){0,3}\]?$"
 const USERNAME_PATTERN = r"^[A-Za-z_][A-Za-z0-9._-]{0,31}$"
@@ -165,13 +171,17 @@ end
 
 """
     validate_global_options(connect_timeout::Integer, strict_host_key_checking::AbstractString,
-                            bandwidth_limit::Integer)
+                            bandwidth_limit::Integer,
+                            server_alive_interval::Integer=DEFAULT_SERVER_ALIVE_INTERVAL,
+                            server_alive_count_max::Integer=DEFAULT_SERVER_ALIVE_COUNT_MAX)
 
 Verify the global transport parameters. Throws `ArgumentError` on violation.
 """
 function validate_global_options(connect_timeout::Integer,
                                  strict_host_key_checking::AbstractString,
-                                 bandwidth_limit::Integer)
+                                 bandwidth_limit::Integer,
+                                 server_alive_interval::Integer=DEFAULT_SERVER_ALIVE_INTERVAL,
+                                 server_alive_count_max::Integer=DEFAULT_SERVER_ALIVE_COUNT_MAX)
     if connect_timeout < 1
         throw(ArgumentError("Global 'connect_timeout' must be a positive integer in seconds (received: $(connect_timeout))."))
     end
@@ -180,6 +190,12 @@ function validate_global_options(connect_timeout::Integer,
     end
     if bandwidth_limit < 0
         throw(ArgumentError("Global 'bandwidth_limit' must be a non-negative integer in KB/s (received: $(bandwidth_limit))."))
+    end
+    if server_alive_interval < 0
+        throw(ArgumentError("Global 'server_alive_interval' must be a non-negative integer in seconds (received: $(server_alive_interval))."))
+    end
+    if server_alive_count_max < 1
+        throw(ArgumentError("Global 'server_alive_count_max' must be a positive integer (received: $(server_alive_count_max))."))
     end
     return nothing
 end

@@ -1,6 +1,6 @@
 const TOP_LEVEL_KEYS = ("globals", "push", "pull", "targets")
 const GLOBALS_KEYS = ("connect_timeout", "strict_host_key_checking", "compress",
-                      "bandwidth_limit")
+                      "bandwidth_limit", "server_alive_interval", "server_alive_count_max")
 const PUSH_KEYS = ("local_source_dir", "excludes", "use_gitignore", "require_clean_git")
 const PULL_KEYS = ("local_destination_root", "output_subdir", "includes", "excludes",
                    "collision_strategy", "clean_remote_after_pull", "purge_scope")
@@ -161,7 +161,11 @@ function parse_config(dict::AbstractDict; config_dir::AbstractString=pwd())::Bri
                                             "accept-new", "[globals]"),
                             optional_bool(globals_raw, "compress", true, "[globals]"),
                             optional_integer(globals_raw, "bandwidth_limit", 0,
-                                             "[globals]"))
+                                             "[globals]"),
+                            optional_integer(globals_raw, "server_alive_interval",
+                                             DEFAULT_SERVER_ALIVE_INTERVAL, "[globals]"),
+                            optional_integer(globals_raw, "server_alive_count_max",
+                                             DEFAULT_SERVER_ALIVE_COUNT_MAX, "[globals]"))
 
     push_raw = configuration_table(dict, "push")
     reject_unknown_keys(push_raw, PUSH_KEYS, "[push]")
