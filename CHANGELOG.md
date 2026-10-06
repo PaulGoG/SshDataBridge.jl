@@ -4,6 +4,8 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-06
+
 ### Added
 
 - ssh keepalive on every connection, through the `[globals]` keys `server_alive_interval` (default 15 s) and `server_alive_count_max` (default 3), passed as `ServerAliveInterval` and `ServerAliveCountMax` to the probe, mkdir, and purge commands and to the ssh transport of rsync. A connection that stops answering, after a suspend of the workstation, a network change, or a dropped NAT mapping, now fails the target after one minute without an answer from the server (interval × (count + 1)); it could previously block the transfer for up to about two hours, the Linux defaults of TCP keepalive. `server_alive_interval = 0` passes neither option and leaves keepalive to the ssh client configuration.
@@ -57,7 +59,8 @@ All notable changes to this project are documented in this file. The format foll
 - Optional clean-git-tree requirement for deployments, evaluated in the configured source directory.
 - Test suite with static analysis (Aqua, JET, ExplicitImports) and a stub-binary harness that exercises the process execution paths without network access; formatting enforced by a dedicated `format/` environment and CI job.
 
-[Unreleased]: https://github.com/PaulGoG/SshDataBridge.jl/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/PaulGoG/SshDataBridge.jl/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/PaulGoG/SshDataBridge.jl/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/PaulGoG/SshDataBridge.jl/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/PaulGoG/SshDataBridge.jl/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/PaulGoG/SshDataBridge.jl/releases/tag/v0.1.0
