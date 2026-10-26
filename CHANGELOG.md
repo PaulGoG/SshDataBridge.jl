@@ -4,6 +4,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 
 ## [Unreleased]
 
+### Added
+
+- `--target <name>` restricts any action to the named targets and may be repeated; an unknown name is refused before anything runs, so a pull or a purge can be rerun for the targets that failed.
+
 ### Fixed
 
 - A child process killed by a signal was reported as exit status 0, so a killed `sshpass` passed as a successful transfer and a killed verification pass as a complete harvest, which would have let a purge run. A signal now reports `128 + signal`.

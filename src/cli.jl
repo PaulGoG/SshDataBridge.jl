@@ -11,6 +11,7 @@ Parsed command line of the driver.
 - `dry_run::Bool`: print the commands without executing them.
 - `clean_remote::Bool`: purge the remote directory after a verified harvest.
 - `confirmed::Bool`: `--yes` was given, confirming remote deletion.
+- `targets::Vector{String}`: names of the targets to act on; empty means every configured target.
 """
 struct CliOptions
     action::Symbol
@@ -18,6 +19,7 @@ struct CliOptions
     dry_run::Bool
     clean_remote::Bool
     confirmed::Bool
+    targets::Vector{String}
 end
 
 """
@@ -48,6 +50,7 @@ function usage()::String
 
            Options:
              -c, --config PATH   Configuration file (default: config.toml next to the project)
+             --target NAME       Act on this target only; repeatable
              --clean-remote      With pull: purge after a verified harvest
              --yes               Confirm a purge (clean, or pull with a purge requested)
              --dry-run           Print the commands without running them
@@ -62,12 +65,13 @@ Parse the command line of the driver. `--help` or `-h` anywhere, or an empty com
 line, selects the `:help` action. Actions and options match exactly. Throws
 `ArgumentError` for an unknown action, an unrecognized option, `--config` without a path,
 `--clean-remote` with an action other than `pull`, or `--yes` with an action other than
-`pull` or `clean`.
+`pull` or `clean`. `--target NAME` may be repeated and restricts the action to the named
+targets.
 """
 function parse_arguments(args::AbstractVector{<:AbstractString};
                          default_config::AbstractString=default_config_path())::CliOptions
     if isempty(args) || "--help" in args || "-h" in args
-        return CliOptions(:help, String(default_config), false, false, false)
+        return CliOptions(:help, String(default_config), false, false, false, String[])
     end
 
     action = String(args[1])
@@ -79,6 +83,7 @@ function parse_arguments(args::AbstractVector{<:AbstractString};
     dry_run = false
     clean_remote = false
     confirmed = false
+    targets = String[]
     idx = 2
     while idx <= length(args)
         arg = args[idx]
@@ -87,6 +92,12 @@ function parse_arguments(args::AbstractVector{<:AbstractString};
                 throw(ArgumentError("$(arg) requires a file path argument."))
             end
             config_path = String(args[idx + 1])
+            idx += 2
+        elseif arg == "--target"
+            if idx + 1 > length(args) || startswith(args[idx + 1], "-")
+                throw(ArgumentError("--target requires a target name."))
+            end
+            push!(targets, String(args[idx + 1]))
             idx += 2
         elseif arg == "--dry-run"
             dry_run = true
@@ -104,7 +115,8 @@ function parse_arguments(args::AbstractVector{<:AbstractString};
             throw(ArgumentError("unrecognized option '$(arg)'."))
         end
     end
-    return CliOptions(Symbol(action), config_path, dry_run, clean_remote, confirmed)
+    return CliOptions(Symbol(action), config_path, dry_run, clean_remote, confirmed,
+                      targets)
 end
 
 count_targets(n::Integer)::String = string(n, n == 1 ? " target" : " targets")
@@ -223,6 +235,18 @@ function run_driver(args::AbstractVector{<:AbstractString}, io::IO, err::IO)::In
         return 1
     end
 
+    if !isempty(options.targets)
+        known = String[t.name for t in config.targets]
+        unknown = filter(name -> !(name in known), unique(options.targets))
+        if !isempty(unknown)
+            println(err, "Error: unknown target(s): ", join(unknown, ", "),
+                    ". Configured targets: ", join(known, ", "), ".")
+            return 1
+        end
+        config = BridgeConfig(config.globals, config.push, config.pull,
+                              filter(t -> t.name in options.targets, config.targets))
+    end
+
     purge_requested = options.action == :clean ||
                       (options.action == :pull &&
                        (options.clean_remote || config.pull.clean_remote_after_pull))
@@ -267,7 +291,8 @@ return the exit status instead of calling `exit`: 0 when every target succeeded,
 usage, configuration, or precondition error, 2 when at least one target failed. Summary
 tables, and the usage text when `--help` is given, go to `io`; error messages, the usage
 text after a usage error, and log records go to `err`. `scripts/run.jl` is a thin
-wrapper around this function.
+wrapper around this function. `--target NAME`, repeatable, restricts the action to the
+named targets; an unknown name is a precondition error.
 
 # Example
 ```julia

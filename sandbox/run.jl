@@ -145,6 +145,14 @@ const SCENARIOS = [(; arguments=["probe"], stub_exit=0, expected=0,
                     fragments=[r"SSH reachable:\s+yes", r"Remote rsync:\s+yes",
                                "All remote diagnostics passed."], spawn=false,
                     description="probe reports both stub nodes healthy"),
+                   (; arguments=["probe", "--target", "sandbox-node-02"], stub_exit=0,
+                    expected=0,
+                    fragments=["probe: 1 target", "sandbox-node-02",
+                               "1 target: 1 ready, 0 not ready"], spawn=false,
+                    description="--target restricts the action to one node"),
+                   (; arguments=["probe", "--target", "nowhere"], stub_exit=0, expected=1,
+                    fragments=["unknown target(s): nowhere"], spawn=false,
+                    description="an unknown target is refused"),
                    (; arguments=["push", "--dry-run"], stub_exit=0, expected=0,
                     fragments=["Dry run: sshpass -d 0 rsync", "--stats --log-file=",
                                "2 succeeded, 0 failed"],
@@ -218,7 +226,7 @@ function run_sandbox(; io::IO=stdout, verbose::Bool=true)
                 ok = outcome.exitcode == scenario.expected && !leaked &&
                      isempty(missing_fragments)
                 println(io, rpad(ok ? "[ok]" : "[failed]", 14),
-                        rpad(join(scenario.arguments, " "), 28), "exit ", outcome.exitcode,
+                        rpad(join(scenario.arguments, " "), 34), "exit ", outcome.exitcode,
                         " (expected ", scenario.expected, ")   ", scenario.description)
                 for fragment in missing_fragments
                     println(io, " "^14, "missing from the output: ", fragment)

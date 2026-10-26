@@ -1191,6 +1191,11 @@ end
         @test_throws ArgumentError parse(["push", "--clean-remote"])
         @test_throws ArgumentError parse(["probe", "--yes"])
         @test_throws ArgumentError parse(["probe", "--config", "--dry-run"])
+        selected = parse(["pull", "--target", "a", "--target", "b"])
+        @test selected.targets == ["a", "b"]
+        @test isempty(parse(["probe"]).targets)
+        @test_throws ArgumentError parse(["probe", "--target"])
+        @test_throws ArgumentError parse(["probe", "--target", "--yes"])
         @test endswith(SshDataBridge.default_config_path(), "config.toml")
 
         # main returns the status instead of exiting and writes to the given streams
@@ -1225,6 +1230,11 @@ end
                                      err=err) ==
                   1
             @test occursin("protected path", String(take!(err)))
+            @test isempty(take!(io))
+            # An unknown --target is refused before anything runs
+            @test SshDataBridge.main(["probe", "--target", "nowhere", "--config", path];
+                                     io=io, err=err) == 1
+            @test occursin("unknown target(s): nowhere", String(take!(err)))
             @test isempty(take!(io))
         end
     end
