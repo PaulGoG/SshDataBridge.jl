@@ -8,126 +8,48 @@ const TARGET_KEYS = ("name", "host", "port", "user", "password", "remote_dir",
                      "output_subdir", "strict_host_key_checking")
 
 """
-    reject_unknown_keys(table::AbstractDict, allowed, location::AbstractString)
+    reject_unknown_keys(table::AbstractDict, allowed, context::AbstractString)
 
-Throw `ArgumentError` naming the first key of `table` that is not listed in `allowed`, so
-that misspelled configuration keys fail before a run starts.
+Throw `ArgumentError` listing every key of `table` that is not in `allowed`, so that
+misspelled configuration keys fail before a run starts.
 """
-function reject_unknown_keys(table::AbstractDict, allowed, location::AbstractString)
-    for key in keys(table)
-        if !(key in allowed)
-            throw(ArgumentError("Unknown configuration key '$(key)' in $(location). Allowed keys: $(join(allowed, ", "))."))
-        end
+function reject_unknown_keys(table::AbstractDict, allowed, context::AbstractString)
+    unknown = sort!([string(k) for k in keys(table) if !(string(k) in allowed)])
+    if !isempty(unknown)
+        throw(ArgumentError("Unknown key(s) in $(context): $(join(("'$(k)'" for k in unknown), ", ")). Allowed keys: $(join(allowed, ", "))."))
     end
     return nothing
 end
 
 """
-    configuration_table(dict::AbstractDict, key::AbstractString)::Dict{String, Any}
+    typed_value(table::AbstractDict, key::AbstractString, ::Type{T}, default, context) where {T}
 
-Return the sub-table `dict[key]` with string keys, or an empty table when the key is
-absent. Throws `ArgumentError` when the value is not a table.
+Return `table[key]` if present, otherwise `default`, checking that the value is a `T`.
+A boolean is never accepted for a numeric `T`, although `Bool <: Integer` in Julia, so
+that `port = true` cannot silently become port 1. Throws `ArgumentError` naming
+`context.key` on a type mismatch.
 """
-function configuration_table(dict::AbstractDict, key::AbstractString)::Dict{String, Any}
-    haskey(dict, key) || return Dict{String, Any}()
-    value = dict[key]
-    if !(value isa AbstractDict)
-        throw(ArgumentError("Configuration section '[$(key)]' must be a table; received $(typeof(value))."))
-    end
-    return Dict{String, Any}(String(k) => v for (k, v) in value)
-end
-
-"""
-    optional_string(table, key, default::String, location)::String
-
-Read a string-valued key with a default; throws `ArgumentError` on a wrong type.
-"""
-function optional_string(table::AbstractDict, key::AbstractString, default::String,
-                         location::AbstractString)::String
-    haskey(table, key) || return default
-    value = table[key]
-    if !(value isa AbstractString)
-        throw(ArgumentError("Configuration key '$(location).$(key)' must be a string; received $(typeof(value))."))
-    end
-    return String(value)
-end
-
-"""
-    optional_string_or_nothing(table, key, location)::Union{String, Nothing}
-
-Read an optional string-valued key without a default; throws `ArgumentError` on a wrong
-type.
-"""
-function optional_string_or_nothing(table::AbstractDict, key::AbstractString,
-                                    location::AbstractString)::Union{String, Nothing}
-    haskey(table, key) || return nothing
-    return optional_string(table, key, "", location)
-end
-
-"""
-    required_string(table, key, location)::String
-
-Read a mandatory string-valued key; throws `ArgumentError` when absent or of a wrong type.
-"""
-function required_string(table::AbstractDict, key::AbstractString,
-                         location::AbstractString)::String
-    if !haskey(table, key)
-        throw(ArgumentError("Configuration key '$(location).$(key)' is mandatory but missing."))
-    end
-    return optional_string(table, key, "", location)
-end
-
-"""
-    optional_integer(table, key, default::Int, location)::Int
-
-Read an integer-valued key with a default; booleans are rejected although they are
-integers in Julia. Throws `ArgumentError` on a wrong type.
-"""
-function optional_integer(table::AbstractDict, key::AbstractString, default::Int,
-                          location::AbstractString)::Int
-    haskey(table, key) || return default
-    value = table[key]
-    if !(value isa Integer) || value isa Bool
-        throw(ArgumentError("Configuration key '$(location).$(key)' must be an integer; received $(typeof(value))."))
-    end
-    return Int(value)
-end
-
-"""
-    optional_bool(table, key, default::Bool, location)::Bool
-
-Read a boolean-valued key with a default; throws `ArgumentError` on a wrong type.
-"""
-function optional_bool(table::AbstractDict, key::AbstractString, default::Bool,
-                       location::AbstractString)::Bool
-    haskey(table, key) || return default
-    value = table[key]
-    if !(value isa Bool)
-        throw(ArgumentError("Configuration key '$(location).$(key)' must be a boolean; received $(typeof(value))."))
+function typed_value(table::AbstractDict, key::AbstractString, ::Type{T}, default,
+                     context::AbstractString) where {T}
+    value = get(table, key, default)
+    if !(value isa T) || (value isa Bool && T !== Bool)
+        location = isempty(context) ? key : "$(context).$(key)"
+        throw(ArgumentError("Configuration key '$(location)' must be of type $(T); received $(typeof(value))."))
     end
     return value
 end
 
 """
-    optional_string_array(table, key, default::Vector{String}, location)::Vector{String}
+    required_value(table::AbstractDict, key::AbstractString, ::Type{T}, context) where {T}
 
-Read an array of strings with a default; throws `ArgumentError` when the value is not an
-array or when any entry is not a string.
+Return `table[key]` checked to be a `T`; throws `ArgumentError` if the key is absent.
 """
-function optional_string_array(table::AbstractDict, key::AbstractString,
-                               default::Vector{String},
-                               location::AbstractString)::Vector{String}
-    haskey(table, key) || return default
-    value = table[key]
-    if !(value isa AbstractVector)
-        throw(ArgumentError("Configuration key '$(location).$(key)' must be an array of strings; received $(typeof(value))."))
+function required_value(table::AbstractDict, key::AbstractString, ::Type{T},
+                        context::AbstractString) where {T}
+    if !haskey(table, key)
+        throw(ArgumentError("Configuration table $(context) is missing the mandatory key '$(key)'."))
     end
-    for (idx, item) in enumerate(value)
-        if !(item isa AbstractString)
-            throw(ArgumentError("Entry #$(idx) of configuration key '$(location).$(key)' must be a string; received $(typeof(item))."))
-        end
-    end
-    return String[String(item) for item in value]
+    return typed_value(table, key, T, nothing, context)
 end
 
 """
@@ -144,86 +66,96 @@ end
     parse_config(dict::AbstractDict; config_dir::AbstractString=pwd())::BridgeConfig
 
 Build a validated [`BridgeConfig`](@ref) from a parsed TOML dictionary. Every table is
-checked for unknown keys and every value for its expected type; mandatory target keys are
-reported by name. `[push].local_source_dir` and `[pull].local_destination_root` are
-mandatory as well, so that a configuration can never deploy the directory of the tool
-itself, or harvest into it, by omission. Relative local paths are resolved against
-`config_dir`.
+checked for unknown keys and every value for its expected type. `[push].local_source_dir`,
+`[pull].local_destination_root`, and the target keys `name`, `host`, `user`, `password`,
+and `remote_dir` are mandatory; every other key has a default. Relative local paths are
+resolved against `config_dir`.
 """
 function parse_config(dict::AbstractDict; config_dir::AbstractString=pwd())::BridgeConfig
     reject_unknown_keys(dict, TOP_LEVEL_KEYS, "the top level")
 
-    globals_raw = configuration_table(dict, "globals")
-    reject_unknown_keys(globals_raw, GLOBALS_KEYS, "[globals]")
-    globals = GlobalOptions(optional_integer(globals_raw, "connect_timeout", 10,
-                                             "[globals]"),
-                            optional_string(globals_raw, "strict_host_key_checking",
-                                            "accept-new", "[globals]"),
-                            optional_bool(globals_raw, "compress", true, "[globals]"),
-                            optional_integer(globals_raw, "bandwidth_limit", 0,
-                                             "[globals]"),
-                            optional_integer(globals_raw, "server_alive_interval",
-                                             DEFAULT_SERVER_ALIVE_INTERVAL, "[globals]"),
-                            optional_integer(globals_raw, "server_alive_count_max",
-                                             DEFAULT_SERVER_ALIVE_COUNT_MAX, "[globals]"))
+    globals_table = typed_value(dict, "globals", AbstractDict, Dict{String, Any}(), "")
+    reject_unknown_keys(globals_table, GLOBALS_KEYS, "[globals]")
+    globals = GlobalOptions(typed_value(globals_table, "connect_timeout", Integer,
+                                        DEFAULT_CONNECT_TIMEOUT, "[globals]"),
+                            typed_value(globals_table, "strict_host_key_checking",
+                                        AbstractString, DEFAULT_HOST_KEY_POLICY,
+                                        "[globals]"),
+                            typed_value(globals_table, "compress", Bool, DEFAULT_COMPRESS,
+                                        "[globals]"),
+                            typed_value(globals_table, "bandwidth_limit", Integer,
+                                        DEFAULT_BANDWIDTH_LIMIT, "[globals]"),
+                            typed_value(globals_table, "server_alive_interval", Integer,
+                                        DEFAULT_SERVER_ALIVE_INTERVAL, "[globals]"),
+                            typed_value(globals_table, "server_alive_count_max", Integer,
+                                        DEFAULT_SERVER_ALIVE_COUNT_MAX, "[globals]"))
 
-    push_raw = configuration_table(dict, "push")
-    reject_unknown_keys(push_raw, PUSH_KEYS, "[push]")
-    push_opts = PushOptions(resolve_local_path(required_string(push_raw,
-                                                               "local_source_dir",
-                                                               "[push]"), config_dir),
-                            optional_string_array(push_raw, "excludes",
-                                                  DEFAULT_PUSH_EXCLUDES, "[push]"),
-                            optional_bool(push_raw, "require_clean_git", false, "[push]"),
-                            optional_bool(push_raw, "use_gitignore", true, "[push]"))
+    push_table = typed_value(dict, "push", AbstractDict, Dict{String, Any}(), "")
+    reject_unknown_keys(push_table, PUSH_KEYS, "[push]")
+    push_opts = PushOptions(resolve_local_path(required_value(push_table,
+                                                              "local_source_dir",
+                                                              AbstractString, "[push]"),
+                                               config_dir),
+                            typed_value(push_table, "excludes", AbstractVector,
+                                        DEFAULT_PUSH_EXCLUDES, "[push]"),
+                            typed_value(push_table, "require_clean_git", Bool,
+                                        DEFAULT_REQUIRE_CLEAN_GIT, "[push]"),
+                            typed_value(push_table, "use_gitignore", Bool,
+                                        DEFAULT_USE_GITIGNORE, "[push]"))
 
-    pull_raw = configuration_table(dict, "pull")
-    reject_unknown_keys(pull_raw, PULL_KEYS, "[pull]")
-    pull_opts = PullOptions(resolve_local_path(required_string(pull_raw,
-                                                               "local_destination_root",
-                                                               "[pull]"), config_dir),
-                            optional_string(pull_raw, "output_subdir", "output", "[pull]"),
-                            optional_string_array(pull_raw, "includes", String[],
-                                                  "[pull]"),
-                            optional_string_array(pull_raw, "excludes",
-                                                  DEFAULT_PULL_EXCLUDES, "[pull]"),
-                            Symbol(optional_string(pull_raw, "collision_strategy",
-                                                   "resume", "[pull]")),
-                            optional_bool(pull_raw, "clean_remote_after_pull", false,
-                                          "[pull]"),
-                            Symbol(optional_string(pull_raw, "purge_scope",
-                                                   String(DEFAULT_PURGE_SCOPE), "[pull]")))
+    pull_table = typed_value(dict, "pull", AbstractDict, Dict{String, Any}(), "")
+    reject_unknown_keys(pull_table, PULL_KEYS, "[pull]")
+    pull_opts = PullOptions(resolve_local_path(required_value(pull_table,
+                                                              "local_destination_root",
+                                                              AbstractString, "[pull]"),
+                                               config_dir),
+                            typed_value(pull_table, "output_subdir", AbstractString,
+                                        DEFAULT_OUTPUT_SUBDIR, "[pull]"),
+                            typed_value(pull_table, "includes", AbstractVector, String[],
+                                        "[pull]"),
+                            typed_value(pull_table, "excludes", AbstractVector,
+                                        DEFAULT_PULL_EXCLUDES, "[pull]"),
+                            Symbol(typed_value(pull_table, "collision_strategy",
+                                               AbstractString,
+                                               String(DEFAULT_COLLISION_STRATEGY),
+                                               "[pull]")),
+                            typed_value(pull_table, "clean_remote_after_pull", Bool,
+                                        DEFAULT_CLEAN_REMOTE_AFTER_PULL, "[pull]"),
+                            Symbol(typed_value(pull_table, "purge_scope", AbstractString,
+                                               String(DEFAULT_PURGE_SCOPE), "[pull]")))
 
     if !haskey(dict, "targets")
-        throw(ArgumentError("Configuration must contain at least one [[targets]] entry."))
+        throw(ArgumentError("Configuration is missing the mandatory [[targets]] array."))
     end
     targets_raw = dict["targets"]
-    if !(targets_raw isa AbstractVector)
-        throw(ArgumentError("Configuration key 'targets' must be an array of tables; received $(typeof(targets_raw))."))
-    end
-    if isempty(targets_raw)
-        throw(ArgumentError("Configuration must contain at least one [[targets]] entry."))
+    if !(targets_raw isa AbstractVector) || isempty(targets_raw)
+        throw(ArgumentError("Configuration key 'targets' must be a non-empty array of [[targets]] tables."))
     end
 
-    targets = BridgeTarget[]
-    for (idx, entry) in enumerate(targets_raw)
-        location = "[[targets]] entry #$(idx)"
+    targets = Vector{BridgeTarget}(undef, length(targets_raw))
+    for (index, entry) in enumerate(targets_raw)
+        context = "[[targets]] entry #$(index)"
         if !(entry isa AbstractDict)
-            throw(ArgumentError("$(location) must be a table; received $(typeof(entry))."))
+            throw(ArgumentError("$(context) is not a table."))
         end
-        table = Dict{String, Any}(String(k) => v for (k, v) in entry)
-        reject_unknown_keys(table, TARGET_KEYS, location)
-        push!(targets,
-              BridgeTarget(optional_string(table, "name", "Target-$(idx)", location),
-                           required_string(table, "host", location),
-                           optional_integer(table, "port", 22, location),
-                           required_string(table, "user", location),
-                           required_string(table, "password", location),
-                           required_string(table, "remote_dir", location),
-                           optional_string(table, "output_subdir", pull_opts.output_subdir,
-                                           location),
-                           optional_string_or_nothing(table, "strict_host_key_checking",
-                                                      location)))
+        reject_unknown_keys(entry, TARGET_KEYS, context)
+        targets[index] = BridgeTarget(required_value(entry, "name", AbstractString,
+                                                     context),
+                                      required_value(entry, "host", AbstractString,
+                                                     context),
+                                      typed_value(entry, "port", Integer, DEFAULT_PORT,
+                                                  context),
+                                      required_value(entry, "user", AbstractString,
+                                                     context),
+                                      required_value(entry, "password", AbstractString,
+                                                     context),
+                                      required_value(entry, "remote_dir", AbstractString,
+                                                     context),
+                                      typed_value(entry, "output_subdir", AbstractString,
+                                                  pull_opts.output_subdir, context),
+                                      typed_value(entry, "strict_host_key_checking",
+                                                  Union{Nothing, AbstractString}, nothing,
+                                                  context))
     end
 
     return BridgeConfig(globals, push_opts, pull_opts, targets)
@@ -233,11 +165,16 @@ end
     load_config(path::AbstractString)::BridgeConfig
 
 Read, parse, and validate the TOML configuration file at `path`. TOML syntax errors and
-every validation failure are reported as `ArgumentError`.
+every validation failure are reported as `ArgumentError`. A file readable by group or
+others is refused, because it holds passwords.
 """
 function load_config(path::AbstractString)::BridgeConfig
     if !isfile(path)
         throw(ArgumentError("Configuration file does not exist: $(path)"))
+    end
+    mode = filemode(path) & 0o777
+    if mode & 0o077 != 0
+        throw(ArgumentError("Configuration file '$(path)' is readable by other users (mode $(string(mode; base=8, pad=3))). It holds passwords; set it to mode 600: chmod 600 '$(path)'"))
     end
     parsed = try
         TOML.parsefile(path)

@@ -1,10 +1,7 @@
-const DEFAULT_PUSH_EXCLUDES = String[".git", ".github", ".vscode", "*.swp", "*~"]
-const DEFAULT_PULL_EXCLUDES = String["*.tmp", "core.*", "*~"]
-
 """
     MissingBinaryError(binaries::Vector{String})
 
-Raised when required system executables are not found in `PATH`.
+Thrown when required system executables are not found in `PATH`.
 """
 struct MissingBinaryError <: Exception
     binaries::Vector{String}
@@ -19,7 +16,7 @@ end
 """
     DirtyWorkingTreeError(directory::String, entries::Vector{String})
 
-Raised when `require_clean_git` is enabled and the git working tree at `directory` has
+Thrown when `require_clean_git` is enabled and the git working tree at `directory` has
 uncommitted changes; `entries` holds the `git status --porcelain` lines.
 """
 struct DirtyWorkingTreeError <: Exception
@@ -39,17 +36,17 @@ end
 """
     BridgeTarget
 
-Immutable description of a remote computing node and its campaign directory layout.
+Immutable description of a remote compute node and its campaign directory layout.
 
 # Fields
-- `name::String`: Unique label; it also names the local harvest directory.
+- `name::String`: unique label; it also names the local harvest directory.
 - `host::String`: DNS hostname, IPv4 address, or IPv6 literal.
 - `port::Int`: SSH daemon port in `1:65535`.
-- `user::String`: Remote user name.
-- `password::String`: Remote password; never printed by `show`.
-- `remote_dir::String`: Absolute base directory of the campaign on the remote host.
-- `output_subdir::String`: Output directory relative to `remote_dir` (default `"output"`).
-- `strict_host_key_checking::Union{String, Nothing}`: Optional host key policy override.
+- `user::String`: remote user name.
+- `password::String`: remote password; never printed by `show`.
+- `remote_dir::String`: absolute base directory of the campaign on the remote host.
+- `output_subdir::String`: output directory relative to `remote_dir` (default `"output"`).
+- `strict_host_key_checking::Union{String, Nothing}`: optional host key policy override.
 
 Trailing slashes of `remote_dir` and `output_subdir` are removed on construction.
 """
@@ -99,13 +96,13 @@ Transport parameters shared by all targets.
 
 # Fields
 - `connect_timeout::Int`: SSH connection timeout in seconds.
-- `strict_host_key_checking::String`: Default host key policy (`"accept-new"`, `"yes"`, `"no"`).
-- `compress::Bool`: Whether `rsync` compresses in flight (`-z`).
-- `bandwidth_limit::Int`: Bandwidth cap in KB/s per transfer; `0` means unlimited.
-- `server_alive_interval::Int`: Seconds of silence from the server after which ssh sends
+- `strict_host_key_checking::String`: default host key policy (`"accept-new"`, `"yes"`, `"no"`).
+- `compress::Bool`: whether `rsync` compresses in flight (`-z`).
+- `bandwidth_limit::Int`: bandwidth cap in KB/s per transfer; `0` means unlimited.
+- `server_alive_interval::Int`: seconds of silence from the server after which ssh sends
   a keepalive request (`ServerAliveInterval`); `0` leaves keepalive to the ssh client
   configuration.
-- `server_alive_count_max::Int`: Unanswered keepalive requests after which ssh drops the
+- `server_alive_count_max::Int`: unanswered keepalive requests after which ssh drops the
   connection (`ServerAliveCountMax`).
 
 ssh abandons a connection after `server_alive_interval * (server_alive_count_max + 1)`
@@ -120,10 +117,10 @@ struct GlobalOptions
     server_alive_interval::Int
     server_alive_count_max::Int
 
-    function GlobalOptions(connect_timeout::Integer=10,
-                           strict_host_key_checking::AbstractString="accept-new",
-                           compress::Bool=true,
-                           bandwidth_limit::Integer=0,
+    function GlobalOptions(connect_timeout::Integer=DEFAULT_CONNECT_TIMEOUT,
+                           strict_host_key_checking::AbstractString=DEFAULT_HOST_KEY_POLICY,
+                           compress::Bool=DEFAULT_COMPRESS,
+                           bandwidth_limit::Integer=DEFAULT_BANDWIDTH_LIMIT,
                            server_alive_interval::Integer=DEFAULT_SERVER_ALIVE_INTERVAL,
                            server_alive_count_max::Integer=DEFAULT_SERVER_ALIVE_COUNT_MAX)
         validate_global_options(connect_timeout, strict_host_key_checking, bandwidth_limit,
@@ -137,13 +134,13 @@ end
 """
     PushOptions
 
-Parameters of the deployment of the local source tree to the remote targets.
+Parameters of the `push` action.
 
 # Fields
-- `local_source_dir::String`: Local project directory to deploy; mandatory in the configuration.
+- `local_source_dir::String`: local project directory to deploy; mandatory in the configuration.
 - `excludes::Vector{String}`: `rsync` exclude patterns.
-- `require_clean_git::Bool`: Abort when the local git working tree has uncommitted changes.
-- `use_gitignore::Bool`: Honour the `.gitignore` rules of the source tree during deployment.
+- `require_clean_git::Bool`: abort when the local git working tree has uncommitted changes.
+- `use_gitignore::Bool`: honor the `.gitignore` rules of the source tree during deployment.
 """
 struct PushOptions
     local_source_dir::String
@@ -153,8 +150,8 @@ struct PushOptions
 
     function PushOptions(local_source_dir::AbstractString,
                          excludes::AbstractVector=DEFAULT_PUSH_EXCLUDES,
-                         require_clean_git::Bool=false,
-                         use_gitignore::Bool=true)
+                         require_clean_git::Bool=DEFAULT_REQUIRE_CLEAN_GIT,
+                         use_gitignore::Bool=DEFAULT_USE_GITIGNORE)
         validate_push_options(local_source_dir)
         validate_patterns(excludes, "[push].excludes")
         return new(String(local_source_dir), String[String(e) for e in excludes],
@@ -165,16 +162,19 @@ end
 """
     PullOptions
 
-Parameters of the retrieval of remote output directories to the local workstation.
+Parameters of the `pull` action.
 
 # Fields
-- `local_destination_root::String`: Local root under which one directory per target is created; mandatory in the configuration. It also holds the rsync logs of every target, see [`transfer_log_path`](@ref).
-- `output_subdir::String`: Default output directory relative to each target's `remote_dir`.
+- `local_destination_root::String`: local root under which one directory per target is created; mandatory in the configuration. It also holds the rsync logs of every target, see [`transfer_log_path`](@ref).
+- `output_subdir::String`: default output directory relative to each target's `remote_dir`.
 - `includes::Vector{String}`: `rsync` include patterns; empty means everything.
 - `excludes::Vector{String}`: `rsync` exclude patterns.
 - `collision_strategy::Symbol`: `:resume`, `:backup`, or `:abort` when the local directory exists.
-- `clean_remote_after_pull::Bool`: Purge the remote directory after a verified harvest.
-- `purge_scope::Symbol`: Directory removed by a purge: `:project` (the whole base directory, the default) or `:output` (the output directory only).
+- `clean_remote_after_pull::Bool`: purge the remote directory after a verified harvest.
+- `purge_scope::Symbol`: directory removed by a purge: `:project` (the whole base directory, the default) or `:output` (the output directory only).
+
+`clean_remote_after_pull` cannot be combined with `includes`: a purge after a harvest
+narrowed by include patterns would destroy the files the filter left behind.
 """
 struct PullOptions
     local_destination_root::String
@@ -186,16 +186,19 @@ struct PullOptions
     purge_scope::Symbol
 
     function PullOptions(local_destination_root::AbstractString,
-                         output_subdir::AbstractString="output",
+                         output_subdir::AbstractString=DEFAULT_OUTPUT_SUBDIR,
                          includes::AbstractVector=String[],
                          excludes::AbstractVector=DEFAULT_PULL_EXCLUDES,
-                         collision_strategy::Symbol=:resume,
-                         clean_remote_after_pull::Bool=false,
+                         collision_strategy::Symbol=DEFAULT_COLLISION_STRATEGY,
+                         clean_remote_after_pull::Bool=DEFAULT_CLEAN_REMOTE_AFTER_PULL,
                          purge_scope::Symbol=DEFAULT_PURGE_SCOPE)
         validate_pull_options(local_destination_root, output_subdir, collision_strategy,
                               purge_scope)
         validate_patterns(includes, "[pull].includes")
         validate_patterns(excludes, "[pull].excludes")
+        if clean_remote_after_pull && !isempty(includes)
+            throw(ArgumentError("Pull parameter 'clean_remote_after_pull' cannot be combined with 'includes': a purge after a harvest narrowed by include patterns would destroy the files the filter left behind."))
+        end
         return new(String(local_destination_root),
                    String(rstrip(output_subdir, '/')),
                    String[String(i) for i in includes],
@@ -239,16 +242,16 @@ end
 """
     ProbeResult
 
-Outcome of a pre-flight probe of one target.
+Outcome of `probe` on one target.
 
 # Fields
-- `target::BridgeTarget`: The probed target.
+- `target::BridgeTarget`: the probed target.
 - `success::Bool`: SSH reachable and `rsync` present on the remote host.
-- `ssh_ok::Bool`: The probe command exited with status zero.
+- `ssh_ok::Bool`: the probe command exited with status zero.
 - `rsync_ok::Bool`: `rsync` is installed on the remote host.
-- `remote_dir_exists::Bool`: The base directory exists.
-- `remote_output_dir_exists::Bool`: The output directory exists.
-- `message::String`: Human-readable diagnostics.
+- `remote_dir_exists::Bool`: the base directory exists.
+- `remote_output_dir_exists::Bool`: the output directory exists.
+- `message::String`: human-readable diagnostics.
 """
 struct ProbeResult
     target::BridgeTarget
@@ -266,12 +269,12 @@ end
 Outcome of a push, pull, or clean action on one target.
 
 # Fields
-- `target::BridgeTarget`: The affected target.
+- `target::BridgeTarget`: the affected target.
 - `action::Symbol`: `:push`, `:pull`, or `:clean`.
-- `success::Bool`: Whether the action completed with exit status zero.
-- `exit_code::Int`: Exit status of the underlying process; `-1` when it could not be spawned.
-- `duration_seconds::Float64`: Wall-clock duration.
-- `message::String`: Human-readable outcome; never contains credentials.
+- `success::Bool`: whether the action completed with exit status zero.
+- `exit_code::Int`: exit status of the underlying process; `-1` when it could not be spawned.
+- `duration_seconds::Float64`: wall-clock duration.
+- `message::String`: human-readable outcome; never contains credentials.
 """
 struct TransferResult
     target::BridgeTarget

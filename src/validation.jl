@@ -2,18 +2,30 @@ const VALID_HOST_KEY_POLICIES = ("accept-new", "yes", "no")
 const VALID_COLLISION_STRATEGIES = (:resume, :backup, :abort)
 const VALID_PURGE_SCOPES = (:output, :project)
 
+# Defaults shared by the option constructors and the configuration parser.
+const DEFAULT_CONNECT_TIMEOUT = 10
+const DEFAULT_HOST_KEY_POLICY = "accept-new"
+const DEFAULT_COMPRESS = true
+const DEFAULT_BANDWIDTH_LIMIT = 0
+# ssh drops a connection after interval * (count_max + 1) seconds without an answer from
+# the server, 60 s here, instead of letting it block a transfer for up to about two hours
+# (Linux TCP keepalive defaults).
+const DEFAULT_SERVER_ALIVE_INTERVAL = 15
+const DEFAULT_SERVER_ALIVE_COUNT_MAX = 3
+const DEFAULT_PORT = 22
+const DEFAULT_PUSH_EXCLUDES = String[".git", ".github", ".vscode", "*.swp", "*~"]
+const DEFAULT_USE_GITIGNORE = true
+const DEFAULT_REQUIRE_CLEAN_GIT = false
+const DEFAULT_OUTPUT_SUBDIR = "output"
+const DEFAULT_PULL_EXCLUDES = String["*.tmp", "core.*", "*~"]
+const DEFAULT_COLLISION_STRATEGY = :resume
+const DEFAULT_CLEAN_REMOTE_AFTER_PULL = false
 # A campaign deploys code that must not stay on the nodes, so a purge removes the whole
 # project directory unless the configuration narrows it.
 const DEFAULT_PURGE_SCOPE = :project
 
-# ssh keepalive: ssh drops a connection after interval * (count_max + 1) seconds without an
-# answer from the server, 60 s here, instead of letting it block a transfer for up to
-# about two hours (Linux TCP keepalive defaults).
-const DEFAULT_SERVER_ALIVE_INTERVAL = 15
-const DEFAULT_SERVER_ALIVE_COUNT_MAX = 3
-
 const HOSTNAME_PATTERN = r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\.?$"
-const IPV6_PATTERN = r"^\[?(?=[0-9A-Fa-f:.]*[0-9A-Fa-f])[0-9A-Fa-f]{0,4}(?::[0-9A-Fa-f]{0,4}){2,7}(?:\.[0-9]{1,3}){0,3}\]?$"
+const IPV6_PATTERN = r"^(?=[0-9A-Fa-f:.]*[0-9A-Fa-f])[0-9A-Fa-f]{0,4}(?::[0-9A-Fa-f]{0,4}){2,7}(?:\.[0-9]{1,3}){0,3}$"
 const USERNAME_PATTERN = r"^[A-Za-z_][A-Za-z0-9._-]{0,31}$"
 const TARGET_NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
 const CONTROL_CHARACTER_PATTERN = r"[\x00-\x1f\x7f]"
@@ -28,7 +40,7 @@ const PROTECTED_ROOT_COMPONENTS = ("bin", "boot", "dev", "etc", "lib", "lib64", 
     is_valid_host(host::AbstractString)::Bool
 
 Whether `host` is a syntactically valid DNS hostname, IPv4 address, or IPv6 literal
-(optionally bracketed).
+(without square brackets, which `ssh` does not strip from `user@host`).
 """
 function is_valid_host(host::AbstractString)::Bool
     return length(host) <= MAX_HOSTNAME_LENGTH &&
@@ -171,17 +183,16 @@ end
 
 """
     validate_global_options(connect_timeout::Integer, strict_host_key_checking::AbstractString,
-                            bandwidth_limit::Integer,
-                            server_alive_interval::Integer=DEFAULT_SERVER_ALIVE_INTERVAL,
-                            server_alive_count_max::Integer=DEFAULT_SERVER_ALIVE_COUNT_MAX)
+                            bandwidth_limit::Integer, server_alive_interval::Integer,
+                            server_alive_count_max::Integer)
 
 Verify the global transport parameters. Throws `ArgumentError` on violation.
 """
 function validate_global_options(connect_timeout::Integer,
                                  strict_host_key_checking::AbstractString,
                                  bandwidth_limit::Integer,
-                                 server_alive_interval::Integer=DEFAULT_SERVER_ALIVE_INTERVAL,
-                                 server_alive_count_max::Integer=DEFAULT_SERVER_ALIVE_COUNT_MAX)
+                                 server_alive_interval::Integer,
+                                 server_alive_count_max::Integer)
     if connect_timeout < 1
         throw(ArgumentError("Global 'connect_timeout' must be a positive integer in seconds (received: $(connect_timeout))."))
     end
@@ -266,7 +277,7 @@ function validate_remote_path_safety(path::AbstractString, user::AbstractString)
     end
     normalized = rstrip(normpath(path), '/')
     if normalized in ("", "/root", "/home", "/home/$(user)")
-        throw(ArgumentError("Recursive deletion refused on critical path '$(path)'."))
+        throw(ArgumentError("Recursive deletion refused for protected path '$(path)'."))
     end
     components = filter(!isempty, split(normalized, '/'))
     if first(components) in PROTECTED_ROOT_COMPONENTS

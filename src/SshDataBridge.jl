@@ -22,27 +22,17 @@ export BridgeTarget,
        DirtyWorkingTreeError,
        load_config,
        parse_config,
-       validate_bridge_target_fields,
-       validate_global_options,
-       validate_push_options,
-       validate_pull_options,
-       validate_remote_path_safety,
-       run_authenticated,
-       command_string,
-       check_local_binaries,
        probe_target,
        probe_all_targets,
-       ensure_remote_directory,
-       purge_path,
-       clean_remote_target,
-       clean_all_remote_targets,
-       build_push_command,
-       build_pull_command,
-       prepare_local_pull_directory,
-       assert_clean_git_tree,
        push_target,
-       pull_target,
        push_all_targets,
-       pull_all_targets
+       pull_target,
+       pull_all_targets,
+       clean_remote_target,
+       clean_all_remote_targets
+
+# `main` is the public command-line driver; it is not exported so that `using` never
+# places a `main` in Main.
+VERSION >= v"1.11" && eval(Expr(:public, :main))
 
 end # module SshDataBridge

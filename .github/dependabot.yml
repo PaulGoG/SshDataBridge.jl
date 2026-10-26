@@ -8,3 +8,7 @@ updates:
     directory: "/format"
     schedule:
       interval: weekly
+  - package-ecosystem: julia
+    directory: "/test"
+    schedule:
+      interval: weekly

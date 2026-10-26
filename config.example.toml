@@ -1,62 +1,61 @@
-# SshDataBridge configuration template. Copy to config.toml (ignored by git) and edit.
+# SshDataBridge configuration template. Install as config.toml with mode 600 and edit.
 
 [globals]
-# SSH connection timeout in seconds
+# OpenSSH ConnectTimeout
 connect_timeout = 10  # integer > 0; units: s
 
-# SSH host key verification policy
+# Host-key verification policy
 strict_host_key_checking = "accept-new"  # one of: "accept-new" | "yes" | "no"
 
-# rsync in-flight compression
+# rsync compression (-z)
 compress = true  # one of: true | false
 
 # rsync bandwidth limit per transfer
 bandwidth_limit = 0  # integer >= 0; units: KB/s; 0 = unlimited
 
-# Interval of ssh keepalive requests to an unresponsive server
+# Server silence before ssh sends a keepalive request (ServerAliveInterval)
 server_alive_interval = 15  # integer >= 0; units: s; 0 = ssh client configuration decides
 
-# Unanswered keepalive requests before ssh drops the connection
+# Unanswered keepalive requests before ssh disconnects (ServerAliveCountMax)
 server_alive_count_max = 3  # integer >= 1
 
 [push]
-# Local source directory to deploy to remotes (mandatory)
+# Local source directory deployed to every target (mandatory)
 local_source_dir = "~/projects/sim_batch_01"  # path relative to this config file or absolute; '~' expands
 
-# Array of glob patterns excluded from deployment
+# rsync exclude patterns for push (the default list)
 excludes = [
     ".git",
     ".github",
     ".vscode",
     "*.swp",
     "*~",
-    "*.jl.cov",
 ]
 
-# Apply the .gitignore rules of the source tree as rsync excludes
+# Apply the .gitignore rules of the source tree as rsync excludes (no '!' negations)
 use_gitignore = true  # one of: true | false
 
-# Require clean git working tree before allowing push
+# Refuse to push from a working tree with uncommitted changes below local_source_dir
 require_clean_git = false  # one of: true | false
 
 [pull]
 # Local destination root: one subdirectory per target, plus the rsync logs (mandatory)
 local_destination_root = "~/campaigns/sim_batch_01/harvest"  # path relative to this config file or absolute; '~' expands
 
-# Default relative output subdirectory on remotes
+# Output directory relative to remote_dir, for targets that do not set their own
 output_subdir = "output"  # relative path without '..' segments
 
-# Harvest only files matching these patterns (empty = all files); excludes take precedence
+# Harvest only files matching these patterns (empty = all files); excludes take precedence; not combinable with a purge
 includes = []
 
-# Retrieval exclusion patterns
+# rsync exclude patterns for pull (the default list)
 excludes = [
     "*.tmp",
     "core.*",
     "*~",
 ]
 
-# Collision handling strategy if local destination directory already exists
+# Handling of an existing local directory of a target
 collision_strategy = "resume"  # one of: "resume" | "backup" | "abort"
 
 # Purge the remote directory after a verified harvest (requires --yes on the CLI)
@@ -66,28 +65,28 @@ clean_remote_after_pull = false  # one of: true | false
 purge_scope = "project"  # one of: "project" | "output"
 
 [[targets]]
-# Unique label; names the local harvest directory
+# Unique label (mandatory); names the local harvest directory and the rsync logs
 name = "Cluster-Node-01"  # letters, digits, '.', '_', '-'; at most 64 characters
 
-# Remote IPv4/IPv6 address or hostname
+# Hostname, IPv4 address, or IPv6 literal without brackets
 host = "192.168.1.100"
 
 # SSH daemon port
-port = 22  # integer in range [1, 65535]
+port = 22  # integer in [1, 65535]
 
-# Remote username
+# Remote user name
 user = "scientist"
 
 # Authentication password
 password = "example_password_1"
 
-# Remote base directory for simulation campaign
+# Base directory of the campaign on the node
 remote_dir = "/home/scientist/campaigns/sim_batch_01"  # absolute path without '..' segments
 
 # Remote output subdirectory relative to remote_dir (optional, defaults to [pull].output_subdir)
 output_subdir = "output"  # relative path without '..' segments
 
-# Optional host key policy override
+# Host-key policy override (optional)
 strict_host_key_checking = "accept-new"  # one of: "accept-new" | "yes" | "no"
 
 [[targets]]

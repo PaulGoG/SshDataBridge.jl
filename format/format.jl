@@ -1,5 +1,6 @@
 #!/usr/bin/env julia
-# Format the repository with JuliaFormatter, or verify it with `--check` (exit 1 on drift).
+# Format the repository with JuliaFormatter, or verify it with `--check` (exit 1 on drift);
+# any other argument is refused with exit 2.
 # A source file that does not parse is reported and fails the run in both modes, because
 # JuliaFormatter skips such a file with a warning and still reports success.
 
@@ -57,6 +58,10 @@ function unparsable_files(root::AbstractString)::Vector{String}
 end
 
 function main(args::Vector{String}=ARGS)
+    if !issubset(args, ("--check",))
+        println(stderr, "Usage: julia format/format.jl [--check]")
+        exit(2)
+    end
     check_only = "--check" in args
     broken = unparsable_files(REPOSITORY_ROOT)
     if !isempty(broken)

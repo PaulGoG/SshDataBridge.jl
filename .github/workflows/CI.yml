@@ -40,6 +40,9 @@ jobs:
         run: julia test/activate.jl
       - name: Run test suite
         run: julia test/runtests.jl
+      - name: Run test suite through Pkg.test
+        if: matrix.version == '1'
+        run: julia -e 'include("activate.jl"); using Pkg; Pkg.test()'
 
   format:
     name: Formatting

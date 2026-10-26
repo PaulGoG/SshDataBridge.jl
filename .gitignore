@@ -1,20 +1,20 @@
-# Real configuration with credentials
-config.toml
-.env
-credentials.toml
-*.local.toml
+# Every TOML file except the tracked environment files and the configuration template,
+# so that no configuration holding credentials can be committed
+*.toml
+!/Project.toml
+!/test/Project.toml
+!/format/Project.toml
+!/config.example.toml
+!/.JuliaFormatter.toml
 
-# Julia environment artifacts
+# Coverage artifacts
 *.jl.cov
 *.jl.*.cov
 *.jl.mem
-/Manifest.toml
-test/Manifest.toml
-format/Manifest.toml
 
-# System & editor artifacts
+# Editor and OS artifacts
 .DS_Store
-*.swp
-*~
 .vscode/
 .idea/
+*.swp
+*~

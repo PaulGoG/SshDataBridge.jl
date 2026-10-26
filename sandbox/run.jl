@@ -1,19 +1,16 @@
 #!/usr/bin/env julia
 
 """
-Exercise every command-line action against stub `ssh`, `sshpass`, and `rsync`
-executables and a throwaway configuration.
-
-Nothing here touches the network, a real host, or a real credential, so the sandbox is a
-safe way to confirm that the tool still behaves after a change. Run it directly:
+Runs every command-line action against stub `ssh`, `sshpass`, and `rsync` executables
+and a throwaway configuration, without network access:
 
 ```bash
 julia sandbox/run.jl
 ```
 
-The driver is called in process through `SshDataBridge.main`; one scenario spawns
-`scripts/run.jl` in a separate Julia process to verify the script wrapper as well. The
-test suite includes this file and asserts the same expectations.
+Most scenarios call `SshDataBridge.main` in process; one spawns `scripts/run.jl` to cover
+the script itself. `test/runtests.jl` includes this file and asserts the same
+expectations.
 """
 
 if abspath(PROGRAM_FILE) == @__FILE__
@@ -104,6 +101,7 @@ function with_sandbox(f)
         end
         config_path = joinpath(dir, "config.toml")
         write(config_path, SANDBOX_CONFIG)
+        chmod(config_path, 0o600)
         return withenv("PATH" => bin * ":" * get(ENV, "PATH", "")) do
             return f(config_path)
         end
@@ -144,49 +142,53 @@ contain, whether to spawn `scripts/run.jl` instead of calling `main` in process,
 the scenario demonstrates.
 """
 const SCENARIOS = [(; arguments=["probe"], stub_exit=0, expected=0,
-                    fragments=[r"SSH reachable:\s+YES", r"Remote rsync:\s+YES",
+                    fragments=[r"SSH reachable:\s+yes", r"Remote rsync:\s+yes",
                                "All remote diagnostics passed."], spawn=false,
                     description="probe reports both stub nodes healthy"),
                    (; arguments=["push", "--dry-run"], stub_exit=0, expected=0,
                     fragments=["Dry run: sshpass -d 0 rsync", "--stats --log-file=",
-                               "Succeeded: 2 | Failed: 0"],
+                               "2 succeeded, 0 failed"],
                     spawn=false, description="push prints its rsync command"),
                    (; arguments=["pull", "--dry-run"], stub_exit=0, expected=0,
                     fragments=["Dry run: sshpass -d 0 rsync", "--stats --log-file=",
-                               "Succeeded: 2 | Failed: 0"],
+                               "2 succeeded, 0 failed"],
                     spawn=false, description="pull prints its rsync command"),
                    (; arguments=["clean", "--dry-run"], stub_exit=0, expected=0,
                     fragments=["Dry run: sshpass -d 0 ssh -n",
-                               "rm -rf -- /home/researcher/campaigns/sandbox'"],
+                               "p=/home/researcher/campaigns/sandbox;",
+                               "rm -rf -- \"\$p\""],
                     spawn=false, description="clean previews the removal"),
                    (; arguments=["clean"], stub_exit=0, expected=1,
-                    fragments=["re-run with --yes"], spawn=false,
+                    fragments=["rerun with --yes"], spawn=false,
                     description="clean refuses to delete without --yes"),
+                   (; arguments=["pull", "--clean-remote"], stub_exit=0, expected=1,
+                    fragments=["rerun with --yes"], spawn=false,
+                    description="a purge after a pull needs --yes"),
                    (; arguments=["clean", "--yes"], stub_exit=0, expected=0,
-                    fragments=["purged in", "Succeeded: 2 | Failed: 0"], spawn=false,
+                    fragments=["purged in", "2 succeeded, 0 failed"], spawn=false,
                     description="clean proceeds once confirmed"),
                    (; arguments=["push"], stub_exit=0, expected=0,
                     fragments=["Deployed successfully", "sandbox-node-01.push.rsync.log",
-                               "Succeeded: 2 | Failed: 0"],
+                               "2 succeeded, 0 failed"],
                     spawn=false, description="push completes against the stubs"),
                    (; arguments=["pull"], stub_exit=0, expected=0,
                     fragments=["Harvested successfully", "sandbox-node-01.pull.rsync.log",
-                               "Succeeded: 2 | Failed: 0"],
+                               "2 succeeded, 0 failed"],
                     spawn=false, description="pull completes against the stubs"),
                    (; arguments=["pull", "--clean-remote", "--yes"], stub_exit=0,
                     expected=0,
                     fragments=["Harvested successfully", "(project scope) purged in",
-                               "Succeeded: 2 | Failed: 0"], spawn=false,
+                               "2 succeeded, 0 failed"], spawn=false,
                     description="a verified harvest is followed by the project purge"),
                    (; arguments=["push"], stub_exit=255, expected=2,
                     fragments=["Remote directory creation failed",
-                               "Succeeded: 0 | Failed: 2"], spawn=false,
+                               "0 succeeded, 2 failed"], spawn=false,
                     description="push reports every failed node and exits 2"),
                    (; arguments=["nonsense"], stub_exit=0, expected=1,
                     fragments=["unknown action"], spawn=false,
                     description="an unknown action is rejected"),
                    (; arguments=["probe"], stub_exit=255, expected=2,
-                    fragments=[r"SSH reachable:\s+NO", "ssh exited with code 255",
+                    fragments=[r"SSH reachable:\s+no", "ssh exited with code 255",
                                "connection refused"], spawn=true,
                     description="scripts/run.jl forwards the arguments and the exit status")]
 
@@ -215,7 +217,7 @@ function run_sandbox(; io::IO=stdout, verbose::Bool=true)
             if verbose
                 ok = outcome.exitcode == scenario.expected && !leaked &&
                      isempty(missing_fragments)
-                println(io, rpad(ok ? "[ok]" : "[UNEXPECTED]", 14),
+                println(io, rpad(ok ? "[ok]" : "[failed]", 14),
                         rpad(join(scenario.arguments, " "), 28), "exit ", outcome.exitcode,
                         " (expected ", scenario.expected, ")   ", scenario.description)
                 for fragment in missing_fragments
@@ -228,7 +230,7 @@ function run_sandbox(; io::IO=stdout, verbose::Bool=true)
 end
 
 if abspath(PROGRAM_FILE) == @__FILE__
-    println("Running the command-line sandbox: stub binaries, throwaway configuration, no network.\n")
+    println("Sandbox run: stub binaries, no network.\n")
     results = run_sandbox()
     failures = count(r -> r.exitcode != r.expected || r.leaked ||
                           !isempty(r.missing_fragments), results)

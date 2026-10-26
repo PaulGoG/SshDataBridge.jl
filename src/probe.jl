@@ -17,7 +17,7 @@ end
 """
     resolve_target_policy(target::BridgeTarget, globals::GlobalOptions)::String
 
-Return the effective host key policy of `target`, honouring its override when present.
+Return the effective host key policy of `target`, honoring its override when present.
 """
 function resolve_target_policy(target::BridgeTarget, globals::GlobalOptions)::String
     return target.strict_host_key_checking !== nothing ? target.strict_host_key_checking :
@@ -39,24 +39,47 @@ function keepalive_options(globals::GlobalOptions)::Vector{String}
 end
 
 """
+    ssh_options(target::BridgeTarget, globals::GlobalOptions)::Vector{String}
+
+`ssh` options shared by the direct commands and the rsync transport: port, host-key
+policy, connection timeout, keepalive (see [`keepalive_options`](@ref)), and
+authentication pinned to passwords. Public-key authentication is disabled and the
+preferred methods are keyboard-interactive and password, so that an agent holding many
+keys cannot exhaust the server's authentication attempts and an encrypted key cannot
+raise a passphrase prompt that `sshpass` does not answer; one password prompt is allowed.
+"""
+function ssh_options(target::BridgeTarget, globals::GlobalOptions)::Vector{String}
+    policy = resolve_target_policy(target, globals)
+    return String["-p", string(target.port),
+                  "-o", "StrictHostKeyChecking=$(policy)",
+                  "-o", "ConnectTimeout=$(globals.connect_timeout)",
+                  keepalive_options(globals)...,
+                  "-o", "PubkeyAuthentication=no",
+                  "-o", "PreferredAuthentications=keyboard-interactive,password",
+                  "-o", "NumberOfPasswordPrompts=1"]
+end
+
+"""
+    remote_shell(script::AbstractString)::String
+
+Wrap `script` as `sh -c '<script>'`, so that it runs under a POSIX shell whatever the
+login shell of the remote account.
+"""
+remote_shell(script::AbstractString)::String = "sh -c " * Base.shell_escape_posixly(script)
+
+"""
     build_ssh_command(target::BridgeTarget, globals::GlobalOptions,
                       remote_command::AbstractString)::Cmd
 
 Construct the `sshpass -d 0 ssh -n ...` invocation that executes `remote_command` on
-`target`. The password is not part of the command; [`run_authenticated`](@ref) supplies it
-through standard input at execution time.
+`target`, with the options of [`ssh_options`](@ref). The password is not part of the
+command; [`run_authenticated`](@ref) supplies it through standard input at execution
+time.
 """
 function build_ssh_command(target::BridgeTarget, globals::GlobalOptions,
                            remote_command::AbstractString)::Cmd
-    policy = resolve_target_policy(target, globals)
-    return Cmd(String["sshpass", "-d", "0", "ssh", "-n", "-p", string(target.port),
-                      "-o", "StrictHostKeyChecking=$(policy)",
-                      "-o", "ConnectTimeout=$(globals.connect_timeout)",
-                      keepalive_options(globals)...,
-                      "-o", "BatchMode=no",
-                      "-o", "NumberOfPasswordPrompts=1",
-                      "$(target.user)@$(target.host)",
-                      String(remote_command)])
+    return Cmd(String["sshpass", "-d", "0", "ssh", "-n", ssh_options(target, globals)...,
+                      "$(target.user)@$(target.host)", String(remote_command)])
 end
 
 """
@@ -87,18 +110,12 @@ end
     probe_target(target::BridgeTarget, globals::GlobalOptions)::ProbeResult
 
 Check SSH reachability of `target`, the presence of `rsync` on the remote host, and the
-existence of the base and output directories. Connection and authentication failures are
-reported through the result, never thrown.
+existence of the base and output directories. Connection, authentication, and spawn
+failures are reported through the result, never thrown.
 """
 function probe_target(target::BridgeTarget, globals::GlobalOptions)::ProbeResult
-    cmd = build_ssh_command(target, globals, build_probe_script(target))
-    outcome = try
-        run_authenticated(cmd, target.password)
-    catch err
-        err isa Base.IOError || rethrow()
-        return ProbeResult(target, false, false, false, false, false,
-                           "Spawn failure: $(sprint(showerror, err))")
-    end
+    cmd = build_ssh_command(target, globals, remote_shell(build_probe_script(target)))
+    outcome = run_authenticated(cmd, target.password)
 
     ssh_ok = outcome.exitcode == 0
     rsync_ok = occursin("RSYNC_OK", outcome.stdout)
@@ -110,12 +127,12 @@ function probe_target(target::BridgeTarget, globals::GlobalOptions)::ProbeResult
         push!(messages,
               "ssh exited with code $(outcome.exitcode): $(strip(outcome.stderr))")
     else
-        rsync_ok || push!(messages, "rsync missing on remote")
+        rsync_ok || push!(messages, "rsync not installed on the node")
         remote_dir_exists ||
-            push!(messages, "remote base dir missing ('$(target.remote_dir)')")
+            push!(messages, "base directory missing ('$(target.remote_dir)')")
         remote_output_dir_exists ||
             push!(messages,
-                  "remote output dir missing ('$(remote_output_directory(target))')")
+                  "output directory missing ('$(remote_output_directory(target))')")
     end
     message = isempty(messages) ? "All remote diagnostics passed." : join(messages, "; ")
     return ProbeResult(target, ssh_ok && rsync_ok, ssh_ok, rsync_ok, remote_dir_exists,
@@ -129,10 +146,8 @@ Probe every configured target concurrently.
 """
 function probe_all_targets(config::BridgeConfig)::Vector{ProbeResult}
     check_local_binaries()
-    tasks = map(config.targets) do target
-        @async probe_target(target, config.globals)
-    end
-    return fetch.(tasks)
+    return map_targets(target -> probe_target(target, config.globals), config.targets,
+                       ProbeResult)
 end
 
 """
@@ -145,12 +160,7 @@ function ensure_remote_directory(target::BridgeTarget, globals::GlobalOptions,
                                  remote_path::AbstractString)
     remote_command = "mkdir -p -- " * Base.shell_escape_posixly(remote_path)
     cmd = build_ssh_command(target, globals, remote_command)
-    outcome = try
-        run_authenticated(cmd, target.password)
-    catch err
-        err isa Base.IOError || rethrow()
-        return (; success=false, exitcode=-1, stderr=sprint(showerror, err))
-    end
+    outcome = run_authenticated(cmd, target.password)
     return (; success=outcome.exitcode == 0, exitcode=outcome.exitcode,
             stderr=outcome.stderr)
 end
@@ -171,13 +181,34 @@ function purge_path(target::BridgeTarget, scope::Symbol)::String
 end
 
 """
+    purge_script(path::AbstractString)::String
+
+POSIX shell script that removes `path` recursively on the node. It refuses, with exit
+status 98, a symbolic link, because removing the link would leave the deployed tree in
+place, and a directory that contains the home directory of the account, which the
+lexical rules of [`validate_remote_path_safety`](@ref) cannot see. A path that does not
+exist is a successful no-op. `path` is POSIX-quoted; the script is one line, so that a
+recorded invocation stays one line.
+"""
+function purge_script(path::AbstractString)::String
+    quoted = Base.shell_escape_posixly(path)
+    return join(["p=$(quoted)",
+                 "if [ -L \"\$p\" ]; then echo \"purge refused: \$p is a symbolic link\" >&2; exit 98; fi",
+                 "[ -e \"\$p\" ] || exit 0",
+                 "r=\$(cd -- \"\$p\" && pwd -P) && h=\$(cd && pwd -P) || exit 98",
+                 "case \"\$h/\" in \"\$r\"/*) echo \"purge refused: \$p contains the home directory\" >&2; exit 98;; esac",
+                 "rm -rf -- \"\$p\""], "; ")
+end
+
+"""
     clean_remote_target(target::BridgeTarget, globals::GlobalOptions;
                         scope::Symbol=:project, dry_run::Bool=false)::TransferResult
 
 Remove the directory selected by `scope` (see [`purge_path`](@ref)) on the remote host
-with `rm -rf`; the default removes the whole project directory. The path is checked with
-[`validate_remote_path_safety`](@ref) before any command is issued; a refusal is reported
-as a failed result.
+with the script of [`purge_script`](@ref), run under `sh -c`; the default removes the
+whole project directory. The path is checked with [`validate_remote_path_safety`](@ref)
+before any command is issued; a refusal, by that check or by the script, is reported as a
+failed result.
 """
 function clean_remote_target(target::BridgeTarget, globals::GlobalOptions;
                              scope::Symbol=DEFAULT_PURGE_SCOPE,
@@ -192,24 +223,18 @@ function clean_remote_target(target::BridgeTarget, globals::GlobalOptions;
                               "Safety refusal: $(sprint(showerror, err))")
     end
 
-    cmd = build_ssh_command(target, globals, "rm -rf -- " * Base.shell_escape_posixly(path))
+    cmd = build_ssh_command(target, globals, remote_shell(purge_script(path)))
     if dry_run
         return TransferResult(target, :clean, true, 0, 0.0,
                               "Dry run: $(command_string(cmd))")
     end
 
-    outcome = try
-        run_authenticated(cmd, target.password)
-    catch err
-        err isa Base.IOError || rethrow()
-        return TransferResult(target, :clean, false, -1, time() - t_start,
-                              "Spawn failure: $(sprint(showerror, err))")
-    end
+    outcome = run_authenticated(cmd, target.password)
     duration = time() - t_start
     success = outcome.exitcode == 0
     message = success ?
               "Remote directory '$(path)' ($(scope) scope) purged in $(round(duration; digits=2)) s." :
-              "rm exited with code $(outcome.exitcode): $(strip(outcome.stderr))"
+              "purge exited with code $(outcome.exitcode): $(strip(outcome.stderr))"
     return TransferResult(target, :clean, success, outcome.exitcode, duration, message)
 end
 
@@ -223,9 +248,8 @@ function clean_all_remote_targets(config::BridgeConfig;
                                   dry_run::Bool=false)::Vector{TransferResult}
     dry_run || check_local_binaries()
     scope = config.pull.purge_scope
-    @info "Dispatching parallel remote purge" total_targets = length(config.targets) scope = scope dry_run = dry_run
-    tasks = map(config.targets) do target
-        @async clean_remote_target(target, config.globals; scope=scope, dry_run=dry_run)
-    end
-    return fetch.(tasks)
+    @info "Purging remote directories" total_targets=length(config.targets) scope=scope dry_run=dry_run
+    return map_targets(target -> clean_remote_target(target, config.globals; scope=scope,
+                                                     dry_run=dry_run), config.targets,
+                       TransferResult)
 end

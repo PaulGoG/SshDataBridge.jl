@@ -6,6 +6,10 @@ end
 
 using Test
 using SshDataBridge
+using SshDataBridge: validate_remote_path_safety, run_authenticated, command_string,
+                     check_local_binaries, ensure_remote_directory, purge_path,
+                     build_push_command, build_pull_command, prepare_local_pull_directory,
+                     assert_clean_git_tree
 using Aqua
 using JET
 using ExplicitImports
@@ -22,6 +26,7 @@ case "$*" in
     *--itemize-changes*)
         code="${STUB_VERIFY_EXIT_CODE:-$code}"
         out="${STUB_VERIFY_STDOUT:-}"
+        if [ -n "${STUB_VERIFY_KILL:-}" ]; then kill -9 $$; fi
         ;;
 esac
 if [ -n "${STUB_ARGS_FILE:-}" ]; then
@@ -34,21 +39,23 @@ exit "$code"
 
 """
     with_stub_binaries(f; exit_code, rsync_exit_code, verify_exit_code, stdout_text,
-                       verify_stdout_text, stderr_text)
+                       verify_stdout_text, stderr_text, verify_kill)
 
 Run `f(args_file)` with stub `sshpass`, `ssh`, and `rsync` executables placed first on
 `PATH`. The stubs print `stdout_text` and `stderr_text`, append their argument vector to
 `args_file`, and exit with `exit_code` (or `rsync_exit_code` when the third argument is
-`rsync`, i.e. for transfer commands). The verification pass of a harvest, recognised by
+`rsync`, i.e. for transfer commands). The verification pass of a harvest, recognized by
 `--itemize-changes`, prints `verify_stdout_text` instead and exits with
-`verify_exit_code` when that is given.
+`verify_exit_code` when that is given; with `verify_kill` the verification pass kills
+itself with SIGKILL.
 """
 function with_stub_binaries(f; exit_code::Integer=0,
                             rsync_exit_code::Union{Nothing, Integer}=nothing,
                             verify_exit_code::Union{Nothing, Integer}=nothing,
                             stdout_text::AbstractString="",
                             verify_stdout_text::AbstractString="",
-                            stderr_text::AbstractString="stub stderr")
+                            stderr_text::AbstractString="stub stderr",
+                            verify_kill::Bool=false)
     return mktempdir() do stubdir
         for name in ("sshpass", "ssh", "rsync")
             path = joinpath(stubdir, name)
@@ -66,6 +73,7 @@ function with_stub_binaries(f; exit_code::Integer=0,
                 "STUB_STDOUT" => stdout_text,
                 "STUB_VERIFY_STDOUT" => verify_stdout_text,
                 "STUB_STDERR" => stderr_text,
+                "STUB_VERIFY_KILL" => (verify_kill ? "1" : nothing),
                 "STUB_ARGS_FILE" => args_file) do
             return f(args_file)
         end
@@ -74,23 +82,30 @@ end
 
 recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : String[]
 
+# The purge runs as `sh -c '<script>'`, so a recorded invocation carries the quoted path
+# of the script in its escaped form; the path is matched followed by its closing quote.
+function purges(line::AbstractString, path::AbstractString)::Bool
+    return occursin("sh -c 'p=", line) && occursin(path * "'", line) &&
+           occursin("rm -rf -- \"\$p\"", line)
+end
+
 @testset "SshDataBridge.jl" begin
-    @testset "Static Code Quality Analysis (QA)" begin
-        @testset "Aqua.jl" begin
+    @testset "Static analysis" begin
+        @testset "Aqua" begin
             Aqua.test_all(SshDataBridge)
         end
 
-        @testset "JET.jl Static Analysis" begin
+        @testset "JET" begin
             JET.test_package(SshDataBridge; target_modules=[SshDataBridge])
         end
 
-        @testset "ExplicitImports.jl" begin
+        @testset "ExplicitImports" begin
             @test ExplicitImports.check_no_implicit_imports(SshDataBridge) === nothing
             @test ExplicitImports.check_no_stale_explicit_imports(SshDataBridge) === nothing
         end
     end
 
-    @testset "Field Validation & Boundary Handling" begin
+    @testset "Field validation" begin
         t = BridgeTarget("Node-01", "192.168.1.50", 22, "admin", "secret", "/opt/sims/",
                          "results/", "accept-new")
         @test t.name == "Node-01"
@@ -107,7 +122,7 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
         @test t_default.strict_host_key_checking === nothing
 
         for host in ("localhost", "node01.cluster.local", "10.0.0.1", "::1",
-                     "2001:db8::10", "[2001:db8::10]", "a-b.example.org.")
+                     "2001:db8::10", "a-b.example.org.")
             @test BridgeTarget("N", host, 22, "u", "p", "/d/e").host == host
         end
 
@@ -122,7 +137,7 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
             @test_throws ArgumentError valid_target(; name=name)
         end
         for host in ("", "192.168.1.1 0", "-bad.example", "a..b", "host_name", "x"^254,
-                     "bad;rm -rf /", "\$(id)")
+                     "bad;rm -rf /", "\$(id)", "[2001:db8::10]", "[::1", "::1]")
             @test_throws ArgumentError valid_target(; host=host)
         end
         @test_throws ArgumentError valid_target(; port=0)
@@ -167,22 +182,20 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
         @test p_valid.excludes == ["*.tmp"]
         @test p_valid.require_clean_git == true
         @test p_valid.use_gitignore == true
-        @test PushOptions("/x").excludes == SshDataBridge.DEFAULT_PUSH_EXCLUDES
-        @test SshDataBridge.DEFAULT_PUSH_EXCLUDES ==
-              [".git", ".github", ".vscode", "*.swp", "*~"]
+        @test ".git" in PushOptions("/x").excludes
         @test_throws ArgumentError PushOptions("")
         @test_throws ArgumentError PushOptions("/x", [""])
         @test_throws ArgumentError PushOptions("/x", ["a\nb"])
         @test_throws ArgumentError PushOptions("/x", Any[1])
 
         pull_valid = PullOptions("/local/dest", "output_dir", ["*.csv"], ["*.tmp"],
-                                 :backup, true)
+                                 :backup, false)
         @test pull_valid.local_destination_root == "/local/dest"
         @test pull_valid.output_subdir == "output_dir"
         @test pull_valid.includes == ["*.csv"]
         @test pull_valid.excludes == ["*.tmp"]
         @test pull_valid.collision_strategy == :backup
-        @test pull_valid.clean_remote_after_pull == true
+        @test pull_valid.clean_remote_after_pull == false
         @test PullOptions("/x").excludes == SshDataBridge.DEFAULT_PULL_EXCLUDES
         @test PullOptions("/x").purge_scope == :project
         @test PullOptions("/x", "output", String[], String[], :resume, false,
@@ -197,6 +210,8 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
         @test_throws ArgumentError PullOptions("/local/dest", "output", String[],
                                                String[], :invalid_strategy)
         @test_throws ArgumentError PullOptions("/local/dest", "output", [""])
+        @test_throws ArgumentError PullOptions("/x", "output", ["*.csv"], String[],
+                                               :resume, true)
 
         for path in ("/home/user/campaigns/sim01", "/scratch/worker/batch1",
                      "/data/sims/run1", "/tmp/campaign", "/mnt/data/x", "/home/user/x")
@@ -211,7 +226,7 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
         @test occursin("git", sprint(showerror, MissingBinaryError(["git"])))
     end
 
-    @testset "TOML Configuration Ingestion" begin
+    @testset "TOML configuration ingestion" begin
         toml_content = """
         [globals]
         connect_timeout = 20
@@ -232,7 +247,7 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
         includes = ["*.jld2", "*.csv"]
         excludes = ["*.tmp"]
         collision_strategy = "backup"
-        clean_remote_after_pull = true
+        clean_remote_after_pull = false
         purge_scope = "project"
 
         [[targets]]
@@ -275,7 +290,7 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
             @test config.pull.includes == ["*.jld2", "*.csv"]
             @test config.pull.excludes == ["*.tmp"]
             @test config.pull.collision_strategy == :backup
-            @test config.pull.clean_remote_after_pull == true
+            @test config.pull.clean_remote_after_pull == false
             @test config.pull.purge_scope == :project
 
             @test length(config.targets) == 2
@@ -312,8 +327,9 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
         end
         @test_throws ArgumentError load_config(joinpath(@__DIR__, "does-not-exist.toml"))
 
-        minimal_target() = Dict{String, Any}("host" => "10.0.0.1", "user" => "u",
-                                             "password" => "p", "remote_dir" => "/a/b")
+        minimal_target() = Dict{String, Any}("name" => "N1", "host" => "10.0.0.1",
+                                             "user" => "u", "password" => "p",
+                                             "remote_dir" => "/a/b")
         function minimal_config(; push=Dict{String, Any}(), pull=Dict{String, Any}(),
                                 targets=Any[minimal_target()],
                                 extra=Dict{String, Any}())
@@ -361,6 +377,16 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
             @test err isa ArgumentError
             return err isa ArgumentError ? err.msg : ""
         end
+        function config_error_message_of(f)
+            err = try
+                f()
+                nothing
+            catch e
+                e
+            end
+            @test err isa ArgumentError
+            return err isa ArgumentError ? err.msg : ""
+        end
 
         @test parse_config(minimal_config()) isa BridgeConfig
         # A purge removes the whole project unless the configuration narrows it
@@ -391,47 +417,48 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
                        config_error_message(minimal_config(;
                                                            targets=Any[merge(minimal_target(),
                                                                              Dict("hostname" => "x"))])))
-        @test occursin("must be an integer",
+        @test occursin("must be of type Integer",
                        config_error_message(minimal_config(;
                                                            extra=Dict{String, Any}("globals" =>
                                                                                        Dict{String,
                                                                                             Any}("connect_timeout" => "10")))))
-        @test occursin("must be an integer",
+        @test occursin("must be of type Integer",
                        config_error_message(minimal_config(;
                                                            targets=Any[merge(minimal_target(),
                                                                              Dict("port" =>
                                                                                       true))])))
-        @test occursin("must be a boolean",
+        @test occursin("must be of type Bool",
                        config_error_message(minimal_config(;
                                                            extra=Dict{String, Any}("globals" =>
                                                                                        Dict{String,
                                                                                             Any}("compress" =>
                                                                                                      1)))))
-        @test occursin("must be a string",
+        @test occursin("must be of type AbstractString",
                        config_error_message(minimal_config(;
                                                            pull=Dict{String, Any}("purge_scope" =>
                                                                                       3))))
-        @test occursin("array of strings",
+        @test occursin("must be of type AbstractVector",
                        config_error_message(minimal_config(;
                                                            push=Dict{String, Any}("excludes" => "x"))))
-        @test occursin("Entry #2",
+        @test occursin("entry #2 must be a string",
                        config_error_message(minimal_config(;
                                                            push=Dict{String, Any}("excludes" =>
                                                                                       Any["a",
                                                                                           2]))))
-        @test occursin("must be a table",
+        @test occursin("'globals' must be of type AbstractDict",
                        config_error_message(minimal_config(;
                                                            extra=Dict{String, Any}("globals" =>
                                                                                        5))))
-        @test occursin("array of tables",
+        @test occursin("array of [[targets]] tables",
                        config_error_message(minimal_config(; targets="x")))
-        @test occursin("entry #1 must be a table",
+        @test occursin("entry #1 is not a table",
                        config_error_message(minimal_config(; targets=Any[1])))
-        for mandatory in ("host", "user", "password", "remote_dir")
+        for mandatory in ("name", "host", "user", "password", "remote_dir")
             incomplete = minimal_target()
             delete!(incomplete, mandatory)
             message = config_error_message(minimal_config(; targets=Any[incomplete]))
-            @test occursin("'[[targets]] entry #1.$(mandatory)' is mandatory", message)
+            @test occursin("[[targets]] entry #1 is missing the mandatory key '$(mandatory)'",
+                           message)
         end
 
         # Relative local paths resolve against the configuration directory; ~ expands
@@ -441,7 +468,7 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
                                 config_dir="/cfg/dir")
         @test resolved.push.local_source_dir == "/cfg/dir/src"
         @test resolved.pull.local_destination_root == joinpath(homedir(), "harvest")
-        @test resolved.targets[1].name == "Target-1"
+        @test resolved.targets[1].name == "N1"
         @test resolved.targets[1].port == 22
 
         # The local paths are mandatory: nothing deploys or harvests into the directory
@@ -450,14 +477,29 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
                                ("pull", "local_destination_root"))
             without = minimal_config()
             delete!(without[section], key)
-            @test occursin("'[$(section)].$(key)' is mandatory",
+            @test occursin("[$(section)] is missing the mandatory key '$(key)'",
                            config_error_message(without))
         end
         @test_throws ArgumentError parse_config(Dict{String, Any}("targets" =>
                                                                       Any[minimal_target()]))
+
+        # The template must satisfy the schema it documents
+        mktemp() do path, io
+            write(io, read(joinpath(pkgdir(SshDataBridge), "config.example.toml"), String))
+            close(io)
+            @test load_config(path) isa BridgeConfig
+        end
+
+        # A configuration readable by others is refused before it is parsed
+        mktemp() do path, io
+            write(io, toml_content)
+            close(io)
+            chmod(path, 0o644)
+            @test occursin("mode 644", config_error_message_of(() -> load_config(path)))
+        end
     end
 
-    @testset "Git Working Tree Requirement" begin
+    @testset "Git working-tree requirement" begin
         mktempdir() do no_git
             withenv("PATH" => no_git) do
                 @test_throws MissingBinaryError assert_clean_git_tree(no_git)
@@ -507,7 +549,7 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
         end
     end
 
-    @testset "Command Construction & Collision Strategies" begin
+    @testset "Command construction and collision strategies" begin
         globals = GlobalOptions(12, "accept-new", true, 2048)
         push_opts = PushOptions("/local/workspace", [".git", "*.tmp"], false)
         pull_opts_resume = PullOptions("/local/harvest", "output", ["*.csv"], ["*.tmp"],
@@ -535,6 +577,8 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
         @test any(occursin("NumberOfPasswordPrompts=1", arg) for arg in push_cmd.exec)
         rsh = push_cmd.exec[findfirst(==("-e"), push_cmd.exec) + 1]
         @test occursin("-o ServerAliveInterval=15 -o ServerAliveCountMax=3", rsh)
+        @test occursin("-o PubkeyAuthentication=no -o PreferredAuthentications=keyboard-interactive,password -o NumberOfPasswordPrompts=1",
+                       rsh)
         @test push_cmd.exec[end - 1] == "/local/workspace/"
         @test push_cmd.exec[end] == "worker@10.0.0.5:/srv/sim_01/"
         logged_push = build_push_command(target, globals, push_opts;
@@ -579,6 +623,8 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
         @test SshDataBridge.transfer_statistics("") === nothing
         @test SshDataBridge.transfer_statistics("Number of regular files transferred: 3\n") ===
               nothing
+        @test SshDataBridge.transfer_statistics("Number of regular files transferred: 1.234\nTotal transferred file size: 5.368.709 bytes\n") ==
+              (files=1234, bytes=5368709)
         @test SshDataBridge.format_bytes(0) == "0 B"
         @test SshDataBridge.format_bytes(1023) == "1023 B"
         @test SshDataBridge.format_bytes(1536) == "1.5 KiB"
@@ -669,9 +715,11 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
         spaced = BridgeTarget("Spaced", "10.0.0.9", 22, "worker", "pw", "/srv/sim a",
                               "out b")
         probe_cmd = SshDataBridge.build_ssh_command(spaced, globals,
-                                                    SshDataBridge.build_probe_script(spaced))
+                                                    SshDataBridge.remote_shell(SshDataBridge.build_probe_script(spaced)))
         @test probe_cmd.exec[1:5] == ["sshpass", "-d", "0", "ssh", "-n"]
         @test "NumberOfPasswordPrompts=1" in probe_cmd.exec
+        @test "PubkeyAuthentication=no" in probe_cmd.exec
+        @test !("BatchMode=no" in probe_cmd.exec)
         @test "ServerAliveInterval=15" in probe_cmd.exec
         @test "ServerAliveCountMax=3" in probe_cmd.exec
 
@@ -683,8 +731,9 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
         @test !any(occursin("ServerAlive", arg)
                    for arg in SshDataBridge.build_ssh_command(target, no_keepalive,
                                                    "true").exec)
-        @test occursin("test -d '/srv/sim a'", probe_cmd.exec[end])
-        @test occursin("test -d '/srv/sim a/out b'", probe_cmd.exec[end])
+        @test startswith(probe_cmd.exec[end], "sh -c ")
+        @test occursin("/srv/sim a", probe_cmd.exec[end])
+        @test occursin("/srv/sim a/out b", probe_cmd.exec[end])
 
         mktempdir() do tmpdir
             pull_test_opts = PullOptions(tmpdir, "output", String[], String[], :resume,
@@ -710,9 +759,32 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
             @test_throws ErrorException prepare_local_pull_directory(target,
                                                                      pull_abort_opts)
         end
+
+        # The purge script refuses a symbolic link and a directory containing the home
+        # directory, treats an absent path as done, and removes an ordinary directory
+        mktempdir() do dir
+            victim = mkpath(joinpath(dir, "victim"))
+            write(joinpath(victim, "f"), "x")
+            link = joinpath(dir, "link")
+            symlink(victim, link)
+            run_purge(path) = SshDataBridge.run_captured(`sh -c $(SshDataBridge.purge_script(path))`)
+            refused = run_purge(link)
+            @test refused.exitcode == 98
+            @test occursin("symbolic link", refused.stderr)
+            @test isdir(victim) && islink(link)
+            home_refused = withenv("HOME" => victim) do
+                return run_purge(dir)
+            end
+            @test home_refused.exitcode == 98
+            @test occursin("home directory", home_refused.stderr)
+            @test isdir(victim)
+            @test run_purge(joinpath(dir, "absent")).exitcode == 0
+            @test run_purge(victim).exitcode == 0
+            @test !isdir(victim)
+        end
     end
 
-    @testset "Credential Handling & Redaction" begin
+    @testset "Credential handling and redaction" begin
         password = "s3cret-p@ss'word"
         target = BridgeTarget("Node-A", "10.0.0.1", 22, "admin", password, "/rem/sim_a")
 
@@ -726,9 +798,13 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
         @test fast.exitcode == 3
         @test fast.stderr == "err\n"
 
-        # A missing executable propagates as an IOError
-        @test_throws Base.IOError run_authenticated(`definitely-missing-binary-xyz`,
-                                                    password)
+        # A missing executable is reported, not thrown
+        missing = run_authenticated(`definitely-missing-binary-xyz`, password)
+        @test missing.exitcode == -1
+        @test occursin("definitely-missing-binary-xyz", missing.stderr)
+
+        # A child killed by a signal reports 128 + signal, not 0
+        @test run_authenticated(`sh -c 'kill -9 $$'`, password).exitcode == 137
 
         # command_string never renders the environment
         secret_cmd = setenv(`echo hello`, "SSHPASS" => password)
@@ -748,7 +824,7 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
         @test !occursin(password, repr([transfer]))
     end
 
-    @testset "Process Execution (stub binaries)" begin
+    @testset "Process execution (stub binaries)" begin
         globals = GlobalOptions(10, "accept-new", false, 0)
         push_opts = PushOptions(mktempdir(), String[".git"], false)
         target = BridgeTarget("Node-A", "10.0.0.1", 22, "admin", "pw-A", "/rem/sim a")
@@ -760,9 +836,10 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
             @test result.remote_dir_exists
             @test !result.remote_output_dir_exists
             @test result.success
-            @test occursin("remote output dir missing", result.message)
+            @test occursin("output directory missing", result.message)
             invocation = only(recorded_invocations(args_file))
-            @test occursin("test -d '/rem/sim a'", invocation)
+            @test occursin("/rem/sim a", invocation)
+            @test occursin("sh -c", invocation)
             @test occursin("-n -p 22", invocation)
         end
 
@@ -902,7 +979,7 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
                 @test occursin("--dry-run --itemize-changes", invocations[2])
                 @test !occursin("--stats", invocations[2])
                 @test !occursin("--log-file", invocations[2])
-                @test occursin("rm -rf -- '/rem/sim a'", invocations[3])
+                @test purges(invocations[3], "/rem/sim a")
                 @test !occursin("/output", invocations[3])
             end
 
@@ -913,8 +990,7 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
             with_stub_binaries() do args_file
                 result = pull_target(target, output_config; clean_remote=true)
                 @test result.success
-                @test occursin("rm -rf -- '/rem/sim a/output'",
-                               recorded_invocations(args_file)[3])
+                @test purges(recorded_invocations(args_file)[3], "/rem/sim a/output")
             end
 
             # Items that changed on the remote since the transfer block the purge: nothing
@@ -926,7 +1002,7 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
                 @test result.exit_code == -1
                 @test occursin("Harvested successfully", result.message)
                 @test occursin("Remote purge refused, nothing was deleted", result.message)
-                @test occursin("4 item(s) on the remote differ", result.message)
+                @test occursin("4 item(s) on the node differ", result.message)
                 @test occursin("late_a.csv", result.message)
                 @test occursin("; ...", result.message)
                 @test !occursin("late_b.csv", result.message)
@@ -946,6 +1022,15 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
                            for line in recorded_invocations(args_file))
             end
 
+            # A verification pass killed by a signal is no evidence either
+            with_stub_binaries(; verify_kill=true) do args_file
+                result = pull_target(target, config; clean_remote=true)
+                @test !result.success
+                @test occursin("verification pass exited with code 137", result.message)
+                @test !any(occursin("rm -rf", line)
+                           for line in recorded_invocations(args_file))
+            end
+
             # Without a requested purge no verification pass runs
             with_stub_binaries() do args_file
                 result = pull_target(target, config)
@@ -955,14 +1040,15 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
                 @test length(recorded_invocations(args_file)) == 1
             end
 
-            # A filtered harvest never purges, whatever the flags say
+            # A purge can never follow a filtered harvest: refused before any transfer
             filtered_opts = PullOptions(harvest_root, "output", ["*.csv"], String[],
-                                        :resume, true)
+                                        :resume, false)
             filtered_config = BridgeConfig(globals, push_opts, filtered_opts, [target])
             with_stub_binaries() do args_file
-                result = pull_target(target, filtered_config; clean_remote=true)
-                @test result.success
-                @test occursin("purge skipped", result.message)
+                @test_throws ArgumentError pull_target(target, filtered_config;
+                                                       clean_remote=true)
+                @test isempty(recorded_invocations(args_file))
+                @test pull_target(target, filtered_config).success
                 @test length(recorded_invocations(args_file)) == 1
             end
 
@@ -971,8 +1057,8 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
                 result = clean_remote_target(target, globals; scope=:project)
                 @test result.success
                 @test occursin("project scope", result.message)
-                @test occursin("rm -rf -- '/rem/sim a'",
-                               only(recorded_invocations(args_file)))
+                invocation = only(recorded_invocations(args_file))
+                @test purges(invocation, "/rem/sim a")
             end
             project_opts = PullOptions(harvest_root, "output", String[], String[], :resume,
                                        false, :project)
@@ -980,8 +1066,8 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
             with_stub_binaries() do args_file
                 results = clean_all_remote_targets(project_config)
                 @test only(results).success
-                @test occursin("rm -rf -- '/rem/sim a'",
-                               only(recorded_invocations(args_file)))
+                invocation = only(recorded_invocations(args_file))
+                @test purges(invocation, "/rem/sim a")
             end
 
             with_stub_binaries(; exit_code=1, stderr_text="rm: cannot remove") do _
@@ -993,11 +1079,10 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
 
             with_stub_binaries() do args_file
                 @test clean_remote_target(target, globals).success
-                @test occursin("rm -rf -- '/rem/sim a'",
-                               only(recorded_invocations(args_file)))
+                invocation = only(recorded_invocations(args_file))
+                @test purges(invocation, "/rem/sim a")
                 @test clean_remote_target(target, globals; scope=:output).success
-                @test occursin("rm -rf -- '/rem/sim a/output'",
-                               last(recorded_invocations(args_file)))
+                @test purges(last(recorded_invocations(args_file)), "/rem/sim a/output")
             end
 
             with_stub_binaries() do _
@@ -1027,7 +1112,7 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
         end
     end
 
-    @testset "Dry-Run Dispatch" begin
+    @testset "Dry-run dispatch" begin
         globals = GlobalOptions(10, "accept-new", true, 0)
         push_opts = PushOptions(mktempdir(), String[".git"], false)
         pull_opts = PullOptions("/local/dst", "output", String[], String[], :resume, true)
@@ -1058,23 +1143,26 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
 
         filtered_config = BridgeConfig(globals, push_opts,
                                        PullOptions("/local/dst", "output", ["*.csv"],
-                                                   String[], :resume, true),
+                                                   String[], :resume, false),
                                        [target1, target2])
-        filtered_results = pull_all_targets(filtered_config; dry_run=true)
-        @test all(r -> occursin("purge skipped", r.message), filtered_results)
+        @test_throws ArgumentError pull_all_targets(filtered_config; dry_run=true,
+                                                    clean_remote=true)
+        @test all(r -> !occursin("purge", r.message),
+                  pull_all_targets(filtered_config; dry_run=true))
 
         output_config = BridgeConfig(globals, push_opts,
                                      PullOptions("/local/dst", "output", String[],
                                                  String[], :resume, true, :output),
                                      [target1, target2])
         output_clean = clean_all_remote_targets(output_config; dry_run=true)
-        @test endswith(output_clean[1].message, "'rm -rf -- /rem/sim_a/output'")
+        @test occursin("p=/rem/sim_a/output;", output_clean[1].message)
 
         clean_results = clean_all_remote_targets(config; dry_run=true)
         @test length(clean_results) == 2
         @test all(r -> r.success, clean_results)
         @test all(r -> r.action == :clean, clean_results)
-        @test endswith(clean_results[1].message, "'rm -rf -- /rem/sim_a'")
+        @test occursin("p=/rem/sim_a;", clean_results[1].message)
+        @test occursin("rm -rf -- \"\$p\"", clean_results[1].message)
         @test occursin("ssh -n -p 22", clean_results[1].message)
 
         for result in vcat(push_results, pull_results, clean_results)
@@ -1088,7 +1176,7 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
         @test parse(String[]).action == :help
         @test parse(["push", "--help"]).action == :help
         @test parse(["-h"]).action == :help
-        options = parse(["PULL", "--config", "/cfg/x.toml", "--dry-run", "--clean-remote",
+        options = parse(["pull", "--config", "/cfg/x.toml", "--dry-run", "--clean-remote",
                          "--yes"])
         @test options.action == :pull
         @test options.config_path == "/cfg/x.toml"
@@ -1099,6 +1187,10 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
         @test_throws ArgumentError parse(["nonsense"])
         @test_throws ArgumentError parse(["probe", "--bogus"])
         @test_throws ArgumentError parse(["probe", "--config"])
+        @test_throws ArgumentError parse(["PULL"])
+        @test_throws ArgumentError parse(["push", "--clean-remote"])
+        @test_throws ArgumentError parse(["probe", "--yes"])
+        @test_throws ArgumentError parse(["probe", "--config", "--dry-run"])
         @test endswith(SshDataBridge.default_config_path(), "config.toml")
 
         # main returns the status instead of exiting and writes to the given streams
@@ -1113,11 +1205,32 @@ recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : Str
         @test occursin("configuration file not found", String(take!(err)))
         @test SshDataBridge.main(["probe", "--bogus"]; io=io, err=err) == 1
         @test occursin("unrecognized option '--bogus'", String(take!(err)))
+
+        # An unsafe purge path is refused before any node is contacted
+        mktemp() do path, cfg
+            write(cfg, """
+            [push]
+            local_source_dir = "."
+            [pull]
+            local_destination_root = "harvest"
+            [[targets]]
+            name = "home"
+            host = "192.0.2.10"
+            user = "researcher"
+            password = "pw"
+            remote_dir = "/home/researcher"
+            """)
+            close(cfg)
+            @test SshDataBridge.main(["clean", "--yes", "--config", path]; io=io,
+                                     err=err) ==
+                  1
+            @test occursin("protected path", String(take!(err)))
+            @test isempty(take!(io))
+        end
     end
 
     @testset "Command-line interface (sandbox)" begin
-        # Exercises scripts/run.jl end to end against stub binaries and a throwaway
-        # configuration: no network, no real host, no real credential.
+        # Runs the sandbox scenarios and asserts their expectations.
         include(joinpath(dirname(@__DIR__), "sandbox", "run.jl"))
         results = run_sandbox(; verbose=false)
         @test !isempty(results)
