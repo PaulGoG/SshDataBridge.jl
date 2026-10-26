@@ -32,6 +32,9 @@ excludes = [
     "*~",
 ]
 
+# rsync include patterns applied before the .gitignore filter: deploy paths the project ignores
+includes = []  # for example ["/Manifest.toml"] when every node runs the same Julia version
+
 # Apply the .gitignore rules of the source tree as rsync excludes (no '!' negations)
 use_gitignore = true  # one of: true | false
 

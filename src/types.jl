@@ -141,21 +141,25 @@ Parameters of the `push` action.
 - `excludes::Vector{String}`: `rsync` exclude patterns.
 - `require_clean_git::Bool`: abort when the local git working tree has uncommitted changes.
 - `use_gitignore::Bool`: honor the `.gitignore` rules of the source tree during deployment.
+- `includes::Vector{String}`: `rsync` include patterns applied before the `.gitignore` filter, re-admitting paths the deployed project ignores; `excludes` take precedence. Empty by default.
 """
 struct PushOptions
     local_source_dir::String
     excludes::Vector{String}
     require_clean_git::Bool
     use_gitignore::Bool
+    includes::Vector{String}
 
     function PushOptions(local_source_dir::AbstractString,
                          excludes::AbstractVector=DEFAULT_PUSH_EXCLUDES,
                          require_clean_git::Bool=DEFAULT_REQUIRE_CLEAN_GIT,
-                         use_gitignore::Bool=DEFAULT_USE_GITIGNORE)
+                         use_gitignore::Bool=DEFAULT_USE_GITIGNORE,
+                         includes::AbstractVector=String[])
         validate_push_options(local_source_dir)
         validate_patterns(excludes, "[push].excludes")
+        validate_patterns(includes, "[push].includes")
         return new(String(local_source_dir), String[String(e) for e in excludes],
-                   require_clean_git, use_gitignore)
+                   require_clean_git, use_gitignore, String[String(i) for i in includes])
     end
 end
 

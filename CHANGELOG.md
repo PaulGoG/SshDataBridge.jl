@@ -7,6 +7,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 ### Added
 
 - `--target <name>` restricts any action to the named targets and may be repeated; an unknown name is refused before anything runs, so a pull or a purge can be rerun for the targets that failed.
+- `[push].includes`: rsync include patterns applied before the `.gitignore` filter, so that a path the deployed project ignores, `Manifest.toml` in particular, can be deployed on purpose; `excludes` take precedence.
 
 ### Fixed
 

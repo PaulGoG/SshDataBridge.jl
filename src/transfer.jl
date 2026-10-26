@@ -66,12 +66,30 @@ function transfer_arguments(log_file::Union{AbstractString, Nothing})::Vector{St
 end
 
 """
+    push_filter_arguments(push_opts::PushOptions)::Vector{String}
+
+`rsync` filter rules of a deployment, in precedence order: the exclude patterns, then
+the include patterns, then the dir-merge filter that applies the `.gitignore` of the
+source tree. `rsync` takes the first matching rule, so an exclude always wins and an
+include re-admits a path that `.gitignore` would drop, `/Manifest.toml` for instance.
+"""
+function push_filter_arguments(push_opts::PushOptions)::Vector{String}
+    args = String["--exclude=$(pattern)" for pattern in push_opts.excludes]
+    for pattern in push_opts.includes
+        push!(args, "--include=$(pattern)")
+    end
+    push_opts.use_gitignore && push!(args, "--filter=:- .gitignore")
+    return args
+end
+
+"""
     build_push_command(target::BridgeTarget, globals::GlobalOptions,
                        push_opts::PushOptions;
                        log_file::Union{AbstractString, Nothing}=nothing)::Cmd
 
-Construct the `rsync` invocation that deploys the local source tree to `target`. The
-password is not part of the command; [`run_authenticated`](@ref) supplies it. With
+Construct the `rsync` invocation that deploys the local source tree to `target`, with
+the filter rules of [`push_filter_arguments`](@ref). The password is not part of the
+command; [`run_authenticated`](@ref) supplies it. With
 `log_file`, `rsync` appends the list of transferred files to that file, see
 [`transfer_log_path`](@ref).
 """
@@ -81,10 +99,7 @@ function build_push_command(target::BridgeTarget, globals::GlobalOptions,
     args = rsync_base_arguments(globals)
     append!(args, transfer_arguments(log_file))
     push!(args, "-e", build_ssh_rsh_string(target, globals))
-    push_opts.use_gitignore && push!(args, "--filter=:- .gitignore")
-    for pattern in push_opts.excludes
-        push!(args, "--exclude=$(pattern)")
-    end
+    append!(args, push_filter_arguments(push_opts))
     source = endswith(push_opts.local_source_dir, '/') ? push_opts.local_source_dir :
              push_opts.local_source_dir * "/"
     destination = "$(target.user)@$(rsync_host(target.host)):$(target.remote_dir)/"

@@ -1,7 +1,8 @@
 const TOP_LEVEL_KEYS = ("globals", "push", "pull", "targets")
 const GLOBALS_KEYS = ("connect_timeout", "strict_host_key_checking", "compress",
                       "bandwidth_limit", "server_alive_interval", "server_alive_count_max")
-const PUSH_KEYS = ("local_source_dir", "excludes", "use_gitignore", "require_clean_git")
+const PUSH_KEYS = ("local_source_dir", "excludes", "includes", "use_gitignore",
+                   "require_clean_git")
 const PULL_KEYS = ("local_destination_root", "output_subdir", "includes", "excludes",
                    "collision_strategy", "clean_remote_after_pull", "purge_scope")
 const TARGET_KEYS = ("name", "host", "port", "user", "password", "remote_dir",
@@ -101,7 +102,9 @@ function parse_config(dict::AbstractDict; config_dir::AbstractString=pwd())::Bri
                             typed_value(push_table, "require_clean_git", Bool,
                                         DEFAULT_REQUIRE_CLEAN_GIT, "[push]"),
                             typed_value(push_table, "use_gitignore", Bool,
-                                        DEFAULT_USE_GITIGNORE, "[push]"))
+                                        DEFAULT_USE_GITIGNORE, "[push]"),
+                            typed_value(push_table, "includes", AbstractVector, String[],
+                                        "[push]"))
 
     pull_table = typed_value(dict, "pull", AbstractDict, Dict{String, Any}(), "")
     reject_unknown_keys(pull_table, PULL_KEYS, "[pull]")

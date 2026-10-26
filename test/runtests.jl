@@ -187,6 +187,10 @@ end
         @test_throws ArgumentError PushOptions("/x", [""])
         @test_throws ArgumentError PushOptions("/x", ["a\nb"])
         @test_throws ArgumentError PushOptions("/x", Any[1])
+        @test isempty(PushOptions("/x").includes)
+        @test PushOptions("/x", String[], false, true, ["/Manifest.toml"]).includes ==
+              ["/Manifest.toml"]
+        @test_throws ArgumentError PushOptions("/x", String[], false, true, [""])
 
         pull_valid = PullOptions("/local/dest", "output_dir", ["*.csv"], ["*.tmp"],
                                  :backup, false)
@@ -239,6 +243,7 @@ end
         [push]
         local_source_dir = "./src_payload"
         excludes = [".git", "data/output"]
+        includes = ["/Manifest.toml"]
         require_clean_git = true
 
         [pull]
@@ -283,6 +288,7 @@ end
 
             @test occursin("src_payload", config.push.local_source_dir)
             @test config.push.excludes == [".git", "data/output"]
+            @test config.push.includes == ["/Manifest.toml"]
             @test config.push.require_clean_git == true
 
             @test occursin("harvested_data", config.pull.local_destination_root)
@@ -649,6 +655,13 @@ end
                                                               String[], String[])) ==
               String[]
 
+        # Push filter rules: excludes first, then includes, then the .gitignore dir-merge
+        @test SshDataBridge.push_filter_arguments(PushOptions("/x", [".git"], false, true,
+                                                              ["/Manifest.toml"])) ==
+              ["--exclude=.git", "--include=/Manifest.toml", "--filter=:- .gitignore"]
+        @test SshDataBridge.push_filter_arguments(PushOptions("/x", [".git"], false, false)) ==
+              ["--exclude=.git"]
+
         if Sys.which("rsync") === nothing
             @warn "rsync is not available; skipping the harvest narrowing check"
         else
@@ -697,6 +710,33 @@ end
                 @test SshDataBridge.transfer_statistics(outcome.stdout) ==
                       (files=0, bytes=0)
                 @test count("building file list", read(log_file, String)) == 2
+
+                # An include re-admits what .gitignore drops; an exclude still wins
+                project = joinpath(dir, "project")
+                mkpath(joinpath(project, "src"))
+                mkpath(joinpath(project, "data"))
+                write(joinpath(project, ".gitignore"), "Manifest.toml\ndata/\n")
+                write(joinpath(project, "Manifest.toml"), "manifest")
+                write(joinpath(project, "data", "big.bin"), "data")
+                write(joinpath(project, "src", "a.jl"), "code")
+                for (opts, expected) in ((PushOptions(project, String[], false, true),
+                                          [".gitignore", "src/a.jl"]),
+                                         (PushOptions(project, String[], false, true,
+                                                      ["/Manifest.toml"]),
+                                          [".gitignore", "Manifest.toml", "src/a.jl"]),
+                                         (PushOptions(project, ["/Manifest.toml"], false,
+                                                      true, ["/Manifest.toml"]),
+                                          [".gitignore", "src/a.jl"]))
+                    deployed = mktempdir(dir)
+                    filters = SshDataBridge.push_filter_arguments(opts)
+                    run(pipeline(`rsync -a $(filters) $(project)/ $(deployed)/`;
+                                 stdout=devnull))
+                    empty!(harvested)
+                    for (root, _, files) in walkdir(deployed), file in files
+                        push!(harvested, relpath(joinpath(root, file), deployed))
+                    end
+                    @test sort(harvested) == expected
+                end
             end
         end
 
