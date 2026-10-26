@@ -12,3 +12,5 @@ updates:
     directory: "/test"
     schedule:
       interval: weekly
+    ignore:
+      - dependency-name: "Test"   # standard library; Dependabot proposes a spurious bound
