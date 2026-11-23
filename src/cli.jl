@@ -63,10 +63,10 @@ end
 
 Parse the command line of the driver. `--help` or `-h` anywhere, or an empty command
 line, selects the `:help` action. Actions and options match exactly. Throws
-`ArgumentError` for an unknown action, an unrecognized option, `--config` without a path,
-`--clean-remote` with an action other than `pull`, or `--yes` with an action other than
-`pull` or `clean`. `--target NAME` may be repeated and restricts the action to the named
-targets.
+`ArgumentError` for an unknown action, an unrecognized option, `--config` without a path
+or given twice, `--clean-remote` with an action other than `pull`, or `--yes` with an
+action other than `pull` or `clean`. `--target NAME` may be repeated and restricts the
+action to the named targets.
 """
 function parse_arguments(args::AbstractVector{<:AbstractString};
                          default_config::AbstractString=default_config_path())::CliOptions
@@ -79,7 +79,7 @@ function parse_arguments(args::AbstractVector{<:AbstractString};
         throw(ArgumentError("unknown action '$(action)'; expected one of $(join(ACTIONS, ", "))."))
     end
 
-    config_path = String(default_config)
+    config_path = nothing
     dry_run = false
     clean_remote = false
     confirmed = false
@@ -91,6 +91,8 @@ function parse_arguments(args::AbstractVector{<:AbstractString};
             if idx + 1 > length(args) || startswith(args[idx + 1], "-")
                 throw(ArgumentError("$(arg) requires a file path argument."))
             end
+            config_path === nothing ||
+                throw(ArgumentError("the configuration file was given more than once."))
             config_path = String(args[idx + 1])
             idx += 2
         elseif arg == "--target"
@@ -115,8 +117,8 @@ function parse_arguments(args::AbstractVector{<:AbstractString};
             throw(ArgumentError("unrecognized option '$(arg)'."))
         end
     end
-    return CliOptions(Symbol(action), config_path, dry_run, clean_remote, confirmed,
-                      targets)
+    return CliOptions(Symbol(action), something(config_path, String(default_config)),
+                      dry_run, clean_remote, confirmed, targets)
 end
 
 count_targets(n::Integer)::String = string(n, n == 1 ? " target" : " targets")
@@ -231,7 +233,7 @@ function run_driver(args::AbstractVector{<:AbstractString}, io::IO, err::IO)::In
         load_config(options.config_path)
     catch e
         e isa ArgumentError || rethrow()
-        println(err, "Error: ", sprint(showerror, e))
+        println(err, "Error: ", e.msg)
         return 1
     end
 
@@ -277,7 +279,7 @@ function run_driver(args::AbstractVector{<:AbstractString}, io::IO, err::IO)::In
         execute(io, options.action, config, options.dry_run, purge_requested)
     catch e
         e isa Union{ArgumentError, MissingBinaryError, DirtyWorkingTreeError} || rethrow()
-        println(err, "Error: ", sprint(showerror, e))
+        println(err, "Error: ", e isa ArgumentError ? e.msg : sprint(showerror, e))
         return 1
     end
     return all_passed ? 0 : 2
@@ -291,8 +293,7 @@ return the exit status instead of calling `exit`: 0 when every target succeeded,
 usage, configuration, or precondition error, 2 when at least one target failed. Summary
 tables, and the usage text when `--help` is given, go to `io`; error messages, the usage
 text after a usage error, and log records go to `err`. `scripts/run.jl` is a thin
-wrapper around this function. `--target NAME`, repeatable, restricts the action to the
-named targets; an unknown name is a precondition error.
+wrapper around this function.
 
 # Example
 ```julia

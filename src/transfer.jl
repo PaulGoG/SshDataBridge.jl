@@ -23,12 +23,14 @@ end
     rsync_base_arguments(globals::GlobalOptions)::Vector{String}
 
 Leading arguments shared by every `rsync` invocation: the `sshpass` prefix, the archive
-and resumption flags, and the optional compression and bandwidth settings. `-v` is not
-among them: a transfer records its file list in a log file instead, see
-[`transfer_log_path`](@ref).
+and resumption flags, `-s` (`--secluded-args`), and the optional compression and
+bandwidth settings. With `-s` the remote path reaches the remote `rsync` through the
+protocol and not through the remote shell, which would split or expand it under rsync
+older than 3.2.4 or with `RSYNC_OLD_ARGS` set. `-v` is not among them: a transfer records
+its file list in a log file instead, see [`transfer_log_path`](@ref).
 """
 function rsync_base_arguments(globals::GlobalOptions)::Vector{String}
-    args = String["sshpass", "-d", "0", "rsync", "-a", "--partial"]
+    args = String["sshpass", "-d", "0", "rsync", "-a", "--partial", "-s"]
     globals.compress && push!(args, "-z")
     globals.bandwidth_limit > 0 && push!(args, "--bwlimit=$(globals.bandwidth_limit)")
     return args
@@ -71,7 +73,7 @@ end
 `rsync` filter rules of a deployment, in precedence order: the exclude patterns, then
 the include patterns, then the dir-merge filter that applies the `.gitignore` of the
 source tree. `rsync` takes the first matching rule, so an exclude always wins and an
-include re-admits a path that `.gitignore` would drop, `/Manifest.toml` for instance.
+include re-admits a path that `.gitignore` would drop (`/Manifest.toml`, for example).
 """
 function push_filter_arguments(push_opts::PushOptions)::Vector{String}
     args = String["--exclude=$(pattern)" for pattern in push_opts.excludes]
@@ -174,7 +176,8 @@ end
 The harvest of [`build_pull_command`](@ref) repeated as a dry run: `--dry-run` transfers
 nothing, `--itemize-changes` prints one line per item that still differs between the
 remote output directory and `local_target_dir`. Without `--stats` and `--log-file`,
-standard output is empty exactly when the local harvest is complete.
+standard output is empty exactly when nothing the filter rules admit differs; files
+matching `excludes` are not compared.
 """
 function build_verification_command(target::BridgeTarget, globals::GlobalOptions,
                                     pull_opts::PullOptions,
@@ -193,7 +196,7 @@ end
 Run the verification pass of [`build_verification_command`](@ref) and return
 `(; complete, detail)`. The harvest counts as complete only when the pass exits with
 status zero and prints nothing; any output line is an item that changed on the remote
-since the transfer, a job still writing, for instance. `detail` explains an incomplete
+since the transfer (a job still writing, for example). `detail` explains an incomplete
 harvest and is empty otherwise.
 """
 function verify_harvest(target::BridgeTarget, config::BridgeConfig,
@@ -250,8 +253,8 @@ end
 
 Parse the statistics block that `rsync --stats` prints: returns `(; files, bytes)`, the
 number of regular files transferred and the total transferred file size in bytes, or
-`nothing` when either line is absent. Thousands separators, whatever the locale inserts,
-are ignored.
+`nothing` when either line is absent. Any thousands separator the locale inserts is
+ignored.
 
 # Example
 ```julia
@@ -327,7 +330,7 @@ function push_target(target::BridgeTarget, config::BridgeConfig;
     catch err
         err isa Base.IOError || rethrow()
         return TransferResult(target, :push, false, -1, time() - t_start,
-                              "Log directory refusal: $(sprint(showerror, err))")
+                              "Could not create the log directory: $(sprint(showerror, err))")
     end
 
     directory = ensure_remote_directory(target, config.globals, target.remote_dir)
@@ -384,7 +387,7 @@ function pull_target(target::BridgeTarget, config::BridgeConfig; dry_run::Bool=f
     catch err
         err isa Union{ErrorException, Base.IOError} || rethrow()
         return TransferResult(target, :pull, false, -1, time() - t_start,
-                              "Destination refusal: $(sprint(showerror, err))")
+                              "Could not prepare the local destination: $(sprint(showerror, err))")
     end
     cmd = build_pull_command(target, config.globals, config.pull, dest_dir;
                              log_file=log_file)
@@ -420,7 +423,7 @@ end
 
 Throw [`MissingBinaryError`](@ref) when `git` is unavailable, `ArgumentError` when `dir`
 does not exist or is not inside a git working tree, and [`DirtyWorkingTreeError`](@ref)
-when the tree has uncommitted changes, untracked files included; only the tree below
+when the tree has uncommitted changes, including untracked files; only the tree below
 `dir` is examined. Returns `nothing` for a clean tree.
 """
 function assert_clean_git_tree(dir::AbstractString)

@@ -24,12 +24,17 @@ const DEFAULT_CLEAN_REMOTE_AFTER_PULL = false
 # project directory unless the configuration narrows it.
 const DEFAULT_PURGE_SCOPE = :project
 
-const HOSTNAME_PATTERN = r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\.?$"
-const IPV6_PATTERN = r"^(?=[0-9A-Fa-f:.]*[0-9A-Fa-f])[0-9A-Fa-f]{0,4}(?::[0-9A-Fa-f]{0,4}){2,7}(?:\.[0-9]{1,3}){0,3}$"
-const USERNAME_PATTERN = r"^[A-Za-z_][A-Za-z0-9._-]{0,31}$"
-const TARGET_NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+# The patterns end in \z, not $, which would also match before a final newline.
+const HOSTNAME_PATTERN = r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\.?\z"
+const IPV6_PATTERN = r"^(?=[0-9A-Fa-f:.]*[0-9A-Fa-f])[0-9A-Fa-f]{0,4}(?::[0-9A-Fa-f]{0,4}){2,7}(?:\.[0-9]{1,3}){0,3}\z"
+const USERNAME_PATTERN = r"^[A-Za-z_][A-Za-z0-9._-]{0,31}\z"
+const TARGET_NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\z"
 const CONTROL_CHARACTER_PATTERN = r"[\x00-\x1f\x7f]"
 const MAX_HOSTNAME_LENGTH = 253
+
+# rsync expands these characters in a remote path on the node, with or without
+# --secluded-args, whereas the ssh commands of this package quote every path literally.
+const RSYNC_WILDCARD_PATTERN = r"[*?\[\]]"
 
 # First path components under which recursive remote deletion is refused.
 const PROTECTED_ROOT_COMPONENTS = ("bin", "boot", "dev", "etc", "lib", "lib64", "opt",
@@ -50,8 +55,7 @@ end
 """
     has_control_characters(text::AbstractString)::Bool
 
-Whether `text` contains ASCII control characters, which are never legitimate in the
-configuration fields and would corrupt the generated shell commands.
+Whether `text` contains an ASCII control character (0x00 to 0x1f, or 0x7f).
 """
 has_control_characters(text::AbstractString)::Bool = occursin(CONTROL_CHARACTER_PATTERN,
                                                               text)
@@ -64,11 +68,21 @@ Whether `path` contains a `..` segment.
 has_parent_segment(path::AbstractString)::Bool = any(==(".."), split(path, '/'))
 
 """
+    has_rsync_wildcards(path::AbstractString)::Bool
+
+Whether `path` contains `*`, `?`, `[`, or `]`. rsync would expand them on the node, so
+that a transfer could act on another directory than the one named, while the purge
+removes the path as written.
+"""
+has_rsync_wildcards(path::AbstractString)::Bool = occursin(RSYNC_WILDCARD_PATTERN, path)
+
+"""
     validate_remote_directory(path::AbstractString, key::AbstractString,
                               context::AbstractString)
 
-Require an absolute remote directory without control characters, `..` segments, or the
-filesystem root. `key` and `context` name the offending parameter in the error message.
+Require an absolute remote directory without control characters, `..` segments, or rsync
+wildcard characters, other than the filesystem root in any spelling (`/`, `//`, `/.`).
+`key` and `context` name the offending parameter in the error message.
 """
 function validate_remote_directory(path::AbstractString, key::AbstractString,
                                    context::AbstractString)
@@ -84,7 +98,10 @@ function validate_remote_directory(path::AbstractString, key::AbstractString,
     if has_parent_segment(path)
         throw(ArgumentError("'$(key)' must not contain '..' segments (received: '$(path)'; $(context))."))
     end
-    if isempty(rstrip(path, '/'))
+    if has_rsync_wildcards(path)
+        throw(ArgumentError("'$(key)' must not contain '*', '?', '[', or ']', which rsync expands on the node (received: '$(path)'; $(context))."))
+    end
+    if isempty(rstrip(normpath(path), '/'))
         throw(ArgumentError("'$(key)' must not be the filesystem root ($(context))."))
     end
     return nothing
@@ -94,7 +111,8 @@ end
     validate_relative_subdirectory(path::AbstractString, key::AbstractString,
                                    context::AbstractString)
 
-Require a non-empty relative path without control characters or `..` segments.
+Require a non-empty relative path without control characters, `..` segments, or rsync
+wildcard characters.
 """
 function validate_relative_subdirectory(path::AbstractString, key::AbstractString,
                                         context::AbstractString)
@@ -110,6 +128,9 @@ function validate_relative_subdirectory(path::AbstractString, key::AbstractStrin
     if has_parent_segment(path)
         throw(ArgumentError("'$(key)' must not contain '..' segments (received: '$(path)'; $(context))."))
     end
+    if has_rsync_wildcards(path)
+        throw(ArgumentError("'$(key)' must not contain '*', '?', '[', or ']', which rsync expands on the node (received: '$(path)'; $(context))."))
+    end
     return nothing
 end
 
@@ -117,7 +138,9 @@ end
     validate_patterns(patterns::AbstractVector, key::AbstractString)
 
 Require every `rsync` include or exclude pattern to be a non-empty string without control
-characters.
+characters, and one that rsync takes as a pattern: it reads a leading `+ ` or `- ` as an
+include or exclude rule of its own, and a lone `!` as the instruction to drop every
+earlier rule.
 """
 function validate_patterns(patterns::AbstractVector, key::AbstractString)
     for (idx, pattern) in enumerate(patterns)
@@ -129,6 +152,9 @@ function validate_patterns(patterns::AbstractVector, key::AbstractString)
         end
         if has_control_characters(pattern)
             throw(ArgumentError("'$(key)' entry #$(idx) must not contain control characters."))
+        end
+        if pattern == "!" || startswith(pattern, "+ ") || startswith(pattern, "- ")
+            throw(ArgumentError("'$(key)' entry #$(idx) ('$(pattern)') is not a plain pattern: rsync reads a leading '+ ' or '- ' and a lone '!' as filter rules of their own."))
         end
     end
     return nothing
@@ -200,7 +226,7 @@ function validate_global_options(connect_timeout::Integer,
         throw(ArgumentError("Global 'strict_host_key_checking' must be one of $(VALID_HOST_KEY_POLICIES) (received: '$(strict_host_key_checking)')."))
     end
     if bandwidth_limit < 0
-        throw(ArgumentError("Global 'bandwidth_limit' must be a non-negative integer in KB/s (received: $(bandwidth_limit))."))
+        throw(ArgumentError("Global 'bandwidth_limit' must be a non-negative integer in KiB/s (received: $(bandwidth_limit))."))
     end
     if server_alive_interval < 0
         throw(ArgumentError("Global 'server_alive_interval' must be a non-negative integer in seconds (received: $(server_alive_interval))."))

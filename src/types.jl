@@ -36,7 +36,7 @@ end
 """
     BridgeTarget
 
-Immutable description of a remote compute node and its campaign directory layout.
+A remote compute node and the layout of its campaign directory.
 
 # Fields
 - `name::String`: unique label; it also names the local harvest directory.
@@ -98,7 +98,7 @@ Transport parameters shared by all targets.
 - `connect_timeout::Int`: SSH connection timeout in seconds.
 - `strict_host_key_checking::String`: default host key policy (`"accept-new"`, `"yes"`, `"no"`).
 - `compress::Bool`: whether `rsync` compresses in flight (`-z`).
-- `bandwidth_limit::Int`: bandwidth cap in KB/s per transfer; `0` means unlimited.
+- `bandwidth_limit::Int`: bandwidth cap in KiB/s per transfer (`rsync --bwlimit`); `0` means unlimited.
 - `server_alive_interval::Int`: seconds of silence from the server after which ssh sends
   a keepalive request (`ServerAliveInterval`); `0` leaves keepalive to the ssh client
   configuration.
@@ -255,7 +255,7 @@ Outcome of `probe` on one target.
 - `rsync_ok::Bool`: `rsync` is installed on the remote host.
 - `remote_dir_exists::Bool`: the base directory exists.
 - `remote_output_dir_exists::Bool`: the output directory exists.
-- `message::String`: human-readable diagnostics.
+- `message::String`: diagnostics, as printed in the summary.
 """
 struct ProbeResult
     target::BridgeTarget
@@ -276,9 +276,9 @@ Outcome of a push, pull, or clean action on one target.
 - `target::BridgeTarget`: the affected target.
 - `action::Symbol`: `:push`, `:pull`, or `:clean`.
 - `success::Bool`: whether the action completed with exit status zero.
-- `exit_code::Int`: exit status of the underlying process; `-1` when it could not be spawned.
+- `exit_code::Int`: exit status of the underlying process, or `-1` when no process produced one: the command could not be started, or the step was refused locally (unsafe purge path, unusable local directory, incomplete harvest).
 - `duration_seconds::Float64`: wall-clock duration.
-- `message::String`: human-readable outcome; never contains credentials.
+- `message::String`: outcome, as printed in the summary; never contains credentials.
 """
 struct TransferResult
     target::BridgeTarget

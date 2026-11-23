@@ -165,11 +165,24 @@ function parse_config(dict::AbstractDict; config_dir::AbstractString=pwd())::Bri
 end
 
 """
+    syntax_error_line(err::TOML.ParserError)::Int
+
+Line of a TOML syntax error, or 0 when the parser reports none. After an error at the
+end of a line the parser stands on the next one, with column -1.
+"""
+function syntax_error_line(err::TOML.ParserError)::Int
+    line = something(err.line, 0)
+    return something(err.column, 1) < 1 ? line - 1 : line
+end
+
+"""
     load_config(path::AbstractString)::BridgeConfig
 
-Read, parse, and validate the TOML configuration file at `path`. TOML syntax errors and
-every validation failure are reported as `ArgumentError`. A file readable by group or
-others is refused, because it holds passwords.
+Read, parse, and validate the TOML configuration file at `path`. Every failure is
+reported as `ArgumentError`: a missing or unreadable file, a file that grants any
+permission to group or others (it holds passwords; use mode 600), a TOML syntax error,
+and every validation failure. A syntax error is reported by its kind and line number
+only: the offending line may be a password line and is never printed.
 """
 function load_config(path::AbstractString)::BridgeConfig
     if !isfile(path)
@@ -177,13 +190,18 @@ function load_config(path::AbstractString)::BridgeConfig
     end
     mode = filemode(path) & 0o777
     if mode & 0o077 != 0
-        throw(ArgumentError("Configuration file '$(path)' is readable by other users (mode $(string(mode; base=8, pad=3))). It holds passwords; set it to mode 600: chmod 600 '$(path)'"))
+        throw(ArgumentError("Configuration file '$(path)' is accessible to group or others (mode $(string(mode; base=8, pad=3))). It holds passwords; set it to mode 600: chmod 600 '$(path)'"))
     end
     parsed = try
         TOML.parsefile(path)
     catch err
-        err isa TOML.ParserError || rethrow()
-        throw(ArgumentError("Failed to parse TOML configuration '$(path)': $(sprint(showerror, err))"))
+        if err isa TOML.ParserError
+            # showerror prints the offending source line, which may be a password line.
+            throw(ArgumentError("Configuration file '$(path)' is not valid TOML: $(err.type) near line $(syntax_error_line(err)). The line is not printed because it may hold a password."))
+        elseif err isa SystemError
+            throw(ArgumentError("Configuration file '$(path)' cannot be read: $(sprint(showerror, err))"))
+        end
+        rethrow()
     end
     return parse_config(parsed; config_dir=dirname(abspath(path)))
 end

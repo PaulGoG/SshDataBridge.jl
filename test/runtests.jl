@@ -133,16 +133,17 @@ end
                                 output_subdir, policy)
         end
         @test valid_target() isa BridgeTarget
-        for name in ("", "-lead", "bad/name", "..", "a b", "x"^65)
+        for name in ("", "-lead", "bad/name", "..", "a b", "x"^65, "node\n")
             @test_throws ArgumentError valid_target(; name=name)
         end
         for host in ("", "192.168.1.1 0", "-bad.example", "a..b", "host_name", "x"^254,
-                     "bad;rm -rf /", "\$(id)", "[2001:db8::10]", "[::1", "::1]")
+                     "bad;rm -rf /", "\$(id)", "[2001:db8::10]", "[::1", "::1]",
+                     "node01\n", "::1\n")
             @test_throws ArgumentError valid_target(; host=host)
         end
         @test_throws ArgumentError valid_target(; port=0)
         @test_throws ArgumentError valid_target(; port=70000)
-        for user in ("", "admin user", "-x", "a@b", "x"^33, "u;id")
+        for user in ("", "admin user", "-x", "a@b", "x"^33, "u;id", "admin\n")
             @test_throws ArgumentError valid_target(; user=user)
         end
         @test_throws ArgumentError valid_target(; password="")
@@ -155,10 +156,12 @@ end
         end
         @test password_error isa ArgumentError
         @test !occursin("secret", sprint(showerror, password_error))
-        for dir in ("", "rel/dir", "/", "//", "/a/../b", "/a\nb")
+        # The root in any spelling, and the characters rsync would expand on the node
+        for dir in ("", "rel/dir", "/", "//", "/.", "/./", "/a/../b", "/a\nb",
+                    "/data/sim_[1]", "/data/run*", "/data/run?")
             @test_throws ArgumentError valid_target(; remote_dir=dir)
         end
-        for sub in ("", "/abs", "../up", "a/../b", "a\tb")
+        for sub in ("", "/abs", "../up", "a/../b", "a\tb", "out*", "run[1]", "run?")
             @test_throws ArgumentError valid_target(; output_subdir=sub)
         end
         @test_throws ArgumentError valid_target(; policy="invalid_policy")
@@ -187,6 +190,10 @@ end
         @test_throws ArgumentError PushOptions("/x", [""])
         @test_throws ArgumentError PushOptions("/x", ["a\nb"])
         @test_throws ArgumentError PushOptions("/x", Any[1])
+        # Entries that rsync would read as rules of their own, not as patterns
+        @test_throws ArgumentError PushOptions("/x", [".git", "!"])
+        @test_throws ArgumentError PushOptions("/x", ["+ x.tmp"])
+        @test_throws ArgumentError PullOptions("/x", "output", ["- keep.txt"])
         @test isempty(PushOptions("/x").includes)
         @test PushOptions("/x", String[], false, true, ["/Manifest.toml"]).includes ==
               ["/Manifest.toml"]
@@ -230,7 +237,7 @@ end
         @test occursin("git", sprint(showerror, MissingBinaryError(["git"])))
     end
 
-    @testset "TOML configuration ingestion" begin
+    @testset "Configuration parsing" begin
         toml_content = """
         [globals]
         connect_timeout = 20
@@ -330,6 +337,38 @@ end
             write(io, "[globals]\nconnect_timeout = [1,\n")
             close(io)
             @test_throws ArgumentError load_config(path)
+        end
+
+        # A syntax error is reported by kind and line number; the line itself, here the
+        # password line, is never echoed.
+        mktemp() do path, io
+            write(io,
+                  "[[targets]]\nname = \"N1\"\nhost = \"10.0.0.1\"\nuser = \"u\"\npassword = \"never-echoed\" x\n")
+            close(io)
+            syntax_error = try
+                load_config(path)
+                nothing
+            catch err
+                err
+            end
+            @test syntax_error isa ArgumentError
+            @test occursin("near line 5", sprint(showerror, syntax_error))
+            @test !occursin("never-echoed", sprint(showerror, syntax_error))
+        end
+
+        # A file its owner cannot read is a configuration error, not a crash. Root reads
+        # any file, so the case is skipped there.
+        mktemp() do path, io
+            close(io)
+            chmod(path, 0o000)
+            readable = try
+                open(close, path)
+                true
+            catch err
+                err isa SystemError || rethrow()
+                false
+            end
+            readable || @test_throws ArgumentError load_config(path)
         end
         @test_throws ArgumentError load_config(joinpath(@__DIR__, "does-not-exist.toml"))
 
@@ -571,6 +610,7 @@ end
         @test "--stats" in push_cmd.exec
         @test !any(startswith("--log-file="), push_cmd.exec)
         @test "--partial" in push_cmd.exec
+        @test "-s" in push_cmd.exec
         @test "-z" in push_cmd.exec
         @test "--bwlimit=2048" in push_cmd.exec
         @test "--filter=:- .gitignore" in push_cmd.exec
@@ -610,6 +650,7 @@ end
                                                                 pull_opts_resume,
                                                                 "/local/harvest/RTX-Node")
         @test "--dry-run" in verification.exec && "--itemize-changes" in verification.exec
+        @test "-s" in verification.exec
         @test !("--stats" in verification.exec) && !("-v" in verification.exec)
         @test !any(startswith("--log-file="), verification.exec)
 
@@ -751,6 +792,13 @@ end
         @test purge_path(target, :project) == "/srv/sim_01"
         @test_throws ArgumentError purge_path(target, :bogus)
 
+        # No trailing slash, whatever the spelling of the output directory: the purge
+        # script must see a symbolic link, not the directory behind it
+        dotted = BridgeTarget("Dotted", "10.0.0.9", 22, "worker", "pw", "/srv/p", ".")
+        @test purge_path(dotted, :output) == "/srv/p"
+        nested = BridgeTarget("Nested", "10.0.0.9", 22, "worker", "pw", "/srv/p", "out/.")
+        @test purge_path(nested, :output) == "/srv/p/out"
+
         # Remote commands are POSIX-quoted and use ssh -n with a single password prompt
         spaced = BridgeTarget("Spaced", "10.0.0.9", 22, "worker", "pw", "/srv/sim a",
                               "out b")
@@ -812,6 +860,9 @@ end
             @test refused.exitcode == 98
             @test occursin("symbolic link", refused.stderr)
             @test isdir(victim) && islink(link)
+            slashed = run_purge(link * "/")
+            @test slashed.exitcode == 98
+            @test isfile(joinpath(victim, "f"))
             home_refused = withenv("HOME" => victim) do
                 return run_purge(dir)
             end
@@ -957,7 +1008,7 @@ end
                       "Deployed successfully in $(round(result.duration_seconds; digits=2)) s: 12 files, 3.0 MiB transferred; log: $(push_log)."
                 invocations = recorded_invocations(args_file)
                 @test length(invocations) == 2
-                @test occursin("rsync -a --partial --stats --log-file=$(push_log) -e ",
+                @test occursin("rsync -a --partial -s --stats --log-file=$(push_log) -e ",
                                invocations[2])
                 @test !occursin("-av", invocations[2])
             end
@@ -998,7 +1049,7 @@ end
                 result = pull_target(target, blocked_config)
                 @test !result.success
                 @test result.exit_code == -1
-                @test occursin("Destination refusal", result.message)
+                @test occursin("Could not prepare the local destination", result.message)
                 @test isempty(recorded_invocations(args_file))
                 @test only(pull_all_targets(blocked_config)).success == false
             end
@@ -1008,7 +1059,7 @@ end
                 result = push_target(target, blocked_config)
                 @test !result.success
                 @test result.exit_code == -1
-                @test occursin("Log directory refusal", result.message)
+                @test occursin("Could not create the log directory", result.message)
                 @test isempty(recorded_invocations(args_file))
             end
 
@@ -1022,7 +1073,7 @@ end
                 invocations = recorded_invocations(args_file)
                 @test length(invocations) == 3
                 pull_log = joinpath(harvest_root, "Node-A.pull.rsync.log")
-                @test occursin("rsync -a --partial --stats --log-file=$(pull_log) -e ",
+                @test occursin("rsync -a --partial -s --stats --log-file=$(pull_log) -e ",
                                invocations[1])
                 @test occursin("; log: $(pull_log).", result.message)
                 @test occursin("rsync -a --partial", invocations[2])
@@ -1061,7 +1112,7 @@ end
                 @test !any(occursin("rm -rf", line) for line in invocations)
             end
 
-            # A verification pass that fails is no evidence of a complete harvest
+            # A failed verification pass blocks the purge
             with_stub_binaries(; verify_exit_code=12, stderr_text="connection reset",
                                ) do args_file
                 result = pull_target(target, config; clean_remote=true)
@@ -1072,7 +1123,7 @@ end
                            for line in recorded_invocations(args_file))
             end
 
-            # A verification pass killed by a signal is no evidence either
+            # So does one killed by a signal
             with_stub_binaries(; verify_kill=true) do args_file
                 result = pull_target(target, config; clean_remote=true)
                 @test !result.success
@@ -1142,6 +1193,28 @@ end
             end
         end
 
+        # Targets run concurrently and keep their place in the result; every task runs to
+        # completion before the exception of another one propagates.
+        slow = BridgeTarget("Slow", "10.0.0.2", 22, "admin", "pw", "/rem/slow")
+        fast = BridgeTarget("Fast", "10.0.0.3", 22, "admin", "pw", "/rem/fast/x")
+        finished = String[]
+        lengths = SshDataBridge.map_targets([slow, fast], Int) do t
+            t === slow && sleep(0.2)
+            push!(finished, t.name)
+            return length(t.remote_dir)
+        end
+        @test lengths == [9, 11]
+        @test finished == ["Fast", "Slow"]
+        empty!(finished)
+        @test_throws CompositeException SshDataBridge.map_targets([slow, fast],
+                                                                  Nothing) do t
+            t === slow && error("failure on one target")
+            sleep(0.05)
+            push!(finished, t.name)
+            return nothing
+        end
+        @test finished == ["Fast"]
+
         # No password may reach any stub through the environment or the arguments
         with_stub_binaries() do args_file
             probe_target(target, globals)
@@ -1162,7 +1235,7 @@ end
         end
     end
 
-    @testset "Dry-run dispatch" begin
+    @testset "Dry-run mode" begin
         globals = GlobalOptions(10, "accept-new", true, 0)
         push_opts = PushOptions(mktempdir(), String[".git"], false)
         pull_opts = PullOptions("/local/dst", "output", String[], String[], :resume, true)
@@ -1241,6 +1314,8 @@ end
         @test_throws ArgumentError parse(["push", "--clean-remote"])
         @test_throws ArgumentError parse(["probe", "--yes"])
         @test_throws ArgumentError parse(["probe", "--config", "--dry-run"])
+        @test_throws ArgumentError parse(["probe", "--config", "a.toml", "--config",
+                                          "b.toml"])
         selected = parse(["pull", "--target", "a", "--target", "b"])
         @test selected.targets == ["a", "b"]
         @test isempty(parse(["probe"]).targets)
@@ -1260,6 +1335,15 @@ end
         @test occursin("configuration file not found", String(take!(err)))
         @test SshDataBridge.main(["probe", "--bogus"]; io=io, err=err) == 1
         @test occursin("unrecognized option '--bogus'", String(take!(err)))
+
+        # A configuration error is printed without the exception type
+        mktemp() do path, cfg
+            write(cfg, "[push]\n")
+            close(cfg)
+            chmod(path, 0o644)
+            @test SshDataBridge.main(["probe", "--config", path]; io=io, err=err) == 1
+            @test occursin("\nError: Configuration file", String(take!(err)))
+        end
 
         # An unsafe purge path is refused before any node is contacted
         mktemp() do path, cfg
@@ -1290,7 +1374,6 @@ end
     end
 
     @testset "Command-line interface (sandbox)" begin
-        # Runs the sandbox scenarios and asserts their expectations.
         include(joinpath(dirname(@__DIR__), "sandbox", "run.jl"))
         results = run_sandbox(; verbose=false)
         @test !isempty(results)

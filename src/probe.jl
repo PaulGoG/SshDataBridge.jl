@@ -85,10 +85,12 @@ end
 """
     remote_output_directory(target::BridgeTarget)::String
 
-Absolute path of the output directory of `target` on the remote host.
+Absolute path of the output directory of `target` on the remote host, without a trailing
+slash. `normpath` keeps one when `output_subdir` ends in a `.` segment, and a purge of
+`link/` would empty the directory behind a symbolic link that the purge script refuses.
 """
 function remote_output_directory(target::BridgeTarget)::String
-    return normpath(joinpath(target.remote_dir, target.output_subdir))
+    return String(rstrip(normpath(joinpath(target.remote_dir, target.output_subdir)), '/'))
 end
 
 """
@@ -183,15 +185,15 @@ end
 """
     purge_script(path::AbstractString)::String
 
-POSIX shell script that removes `path` recursively on the node. It refuses, with exit
-status 98, a symbolic link, because removing the link would leave the deployed tree in
-place, and a directory that contains the home directory of the account, which the
-lexical rules of [`validate_remote_path_safety`](@ref) cannot see. A path that does not
-exist is a successful no-op. `path` is POSIX-quoted; the script is one line, so that a
-recorded invocation stays one line.
+One-line POSIX shell script that removes `path` recursively on the node. It exits 0 when
+the path does not exist. It exits 98, deleting nothing, in two cases: the path is a
+symbolic link, whose removal would leave the deployed tree in place, or it is a directory
+that contains the home directory of the account, which the lexical rules of
+[`validate_remote_path_safety`](@ref) cannot see. `path` is POSIX-quoted, without a
+trailing slash, so that the link test sees a link and not the directory behind it.
 """
 function purge_script(path::AbstractString)::String
-    quoted = Base.shell_escape_posixly(path)
+    quoted = Base.shell_escape_posixly(rstrip(path, '/'))
     return join(["p=$(quoted)",
                  "if [ -L \"\$p\" ]; then echo \"purge refused: \$p is a symbolic link\" >&2; exit 98; fi",
                  "[ -e \"\$p\" ] || exit 0",
