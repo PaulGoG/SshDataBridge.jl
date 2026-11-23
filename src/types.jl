@@ -48,7 +48,9 @@ A remote compute node and the layout of its campaign directory.
 - `output_subdir::String`: output directory relative to `remote_dir` (default `"output"`).
 - `strict_host_key_checking::Union{String, Nothing}`: optional host key policy override.
 
-Trailing slashes of `remote_dir` and `output_subdir` are removed on construction.
+`remote_dir` and `output_subdir` are stored normalized: `.` segments, repeated slashes,
+and trailing slashes are removed on construction, so that every command names the
+directory in one spelling.
 """
 struct BridgeTarget
     name::String
@@ -75,8 +77,8 @@ struct BridgeTarget
                    Int(port),
                    String(user),
                    String(password),
-                   String(rstrip(remote_dir, '/')),
-                   String(rstrip(output_subdir, '/')),
+                   String(rstrip(normpath(remote_dir), '/')),
+                   String(rstrip(normpath(output_subdir), '/')),
                    strict_host_key_checking === nothing ? nothing :
                    String(strict_host_key_checking))
     end

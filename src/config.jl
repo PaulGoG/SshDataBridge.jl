@@ -172,7 +172,7 @@ end of a line the parser stands on the next one, with column -1.
 """
 function syntax_error_line(err::TOML.ParserError)::Int
     line = something(err.line, 0)
-    return something(err.column, 1) < 1 ? line - 1 : line
+    return something(err.column, 0) < 0 ? line - 1 : line
 end
 
 """
@@ -192,16 +192,17 @@ function load_config(path::AbstractString)::BridgeConfig
     if mode & 0o077 != 0
         throw(ArgumentError("Configuration file '$(path)' is accessible to group or others (mode $(string(mode; base=8, pad=3))). It holds passwords; set it to mode 600: chmod 600 '$(path)'"))
     end
+    # tryparsefile returns a syntax error instead of throwing it. An ArgumentError thrown
+    # from a catch block would keep the ParserError as its cause, and the display of an
+    # uncaught error prints every cause, the offending source line included.
     parsed = try
-        TOML.parsefile(path)
+        TOML.tryparsefile(path)
     catch err
-        if err isa TOML.ParserError
-            # showerror prints the offending source line, which may be a password line.
-            throw(ArgumentError("Configuration file '$(path)' is not valid TOML: $(err.type) near line $(syntax_error_line(err)). The line is not printed because it may hold a password."))
-        elseif err isa SystemError
-            throw(ArgumentError("Configuration file '$(path)' cannot be read: $(sprint(showerror, err))"))
-        end
-        rethrow()
+        err isa SystemError || rethrow()
+        throw(ArgumentError("Configuration file '$(path)' cannot be read: $(sprint(showerror, err))"))
+    end
+    if parsed isa TOML.ParserError
+        throw(ArgumentError("Configuration file '$(path)' is not valid TOML: $(parsed.type) near line $(syntax_error_line(parsed)). The line is not printed because it may hold a password."))
     end
     return parse_config(parsed; config_dir=dirname(abspath(path)))
 end

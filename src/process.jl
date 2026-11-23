@@ -41,6 +41,8 @@ function run_authenticated(cmd::Cmd, password::AbstractString)
         open(pipeline(ignorestatus(cmd); stdout=out, stderr=err), "w")
     catch e
         e isa Base.IOError || rethrow()
+        close(out)
+        close(err)
         return (; exitcode=-1, stdout="",
                 stderr="could not start $(first(cmd.exec)): $(sprint(showerror, e))")
     end

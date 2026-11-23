@@ -130,6 +130,12 @@ end
         @test t_default.output_subdir == "output"
         @test t_default.strict_host_key_checking === nothing
 
+        # Paths are stored in one spelling, without "." segments or doubled slashes
+        respelled = BridgeTarget("Node-03", "10.0.0.1", 22, "root", "toor", "/srv//p/.",
+                                 "out/./x/")
+        @test respelled.remote_dir == "/srv/p"
+        @test respelled.output_subdir == "out/x"
+
         for host in ("localhost", "node01.cluster.local", "10.0.0.1", "::1",
                      "2001:db8::10", "a-b.example.org.")
             @test BridgeTarget("N", host, 22, "u", "p", "/d/e").host == host
@@ -363,6 +369,15 @@ end
             @test syntax_error isa ArgumentError
             @test occursin("near line 5", sprint(showerror, syntax_error))
             @test !occursin("never-echoed", sprint(showerror, syntax_error))
+            # No parser error stays on the exception stack as a cause: the display of an
+            # uncaught error prints causes, and that of a parser error prints the line.
+            causes = try
+                load_config(path)
+                0
+            catch
+                length(current_exceptions())
+            end
+            @test causes == 1
         end
 
         # A file its owner cannot read is a configuration error, not a crash. Root reads
@@ -377,7 +392,13 @@ end
                 err isa SystemError || rethrow()
                 false
             end
-            readable || @test_throws ArgumentError load_config(path)
+            if readable
+                @test_skip "unreadable configuration file"
+            else
+                @test_throws ArgumentError load_config(path)
+                @test SshDataBridge.main(["probe", "--config", path]; io=IOBuffer(),
+                                         err=IOBuffer()) == 1
+            end
         end
         @test_throws ArgumentError load_config(joinpath(@__DIR__, "does-not-exist.toml"))
 
@@ -915,6 +936,14 @@ end
         captured = SshDataBridge.run_captured(`sh -c 'i=0; while [ $i -lt 20000 ]; do echo out-line; i=$((i+1)); done; exit 4'`)
         @test captured.exitcode == 4
         @test count(==('\n'), captured.stdout) == 20000
+
+        # Output that a descendant writes after the child has exited is still read. On
+        # Julia 1.10, wait alone returned before it arrived.
+        late = run_authenticated(`sh -c 'read -r x; (sleep 0.5; printf late) & exit 0'`,
+                                 password)
+        @test late.stdout == "late"
+        @test SshDataBridge.run_captured(`sh -c '(sleep 0.5; printf late) & exit 0'`).stdout ==
+              "late"
 
         # command_string never renders the environment
         secret_cmd = setenv(`echo hello`, "SSHPASS" => password)
