@@ -4,6 +4,27 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 
 ## [Unreleased]
 
+### Fixed
+
+- On Julia 1.10 the output of a child process could be read before it had been copied (about once in 30 000 runs on the development machine), so a verification pass with pending items could pass as complete and let a purge run. Both streams are now read to end-of-file on every Julia version.
+- A TOML syntax error on a `password` line printed that line, password included, in the error message. A syntax error is now reported by its kind and line number, without the line.
+- `remote_dir` and `output_subdir` may no longer contain `*`, `?`, `[`, or `]`. rsync expands them on the node, so a push or a pull could act on a sibling directory matching the pattern while the purge, which quotes the path, removed the literal one.
+- rsync runs with `-s`, so the remote path no longer passes through the remote shell. With rsync older than 3.2.4 on the workstation, or with `RSYNC_OLD_ARGS` set, a path containing a space or a shell character was split or interpreted there.
+- With `output_subdir = "."`, or one ending in `/.`, and `purge_scope = "output"`, the purge path kept a trailing slash, and the purge emptied the directory behind a symbolic link that it is meant to refuse.
+- `/.` and `/./` passed as `remote_dir` although they name the filesystem root.
+- An exclude or include entry that rsync reads as a rule of its own (`!`, or a leading `+ ` or `- `) is refused; `excludes = [".git", "!"]` used to deploy `.git`.
+- A trailing newline passed the `name`, `host`, and `user` checks; the patterns are anchored at the end of the string.
+- A second `--config` silently replaced the first; it is a usage error, as the README stated.
+- A configuration file its owner cannot read made the driver throw instead of exiting with status 1.
+- Configuration and precondition errors were printed as `Error: ArgumentError: ...`; the exception type is gone.
+- The README listed only `name` among the mandatory target keys; `host`, `user`, `password`, and `remote_dir` are mandatory as well. `bandwidth_limit` is in KiB/s, the unit of rsync's `--bwlimit`, not KB/s.
+
+### Changed
+
+- A local directory that cannot be created is reported as `Could not create the log directory` or `Could not prepare the local destination`, no longer as a "refusal".
+- The formatting check runs in its own workflow, `Format.yml`, and the test suite runs JET on the stable Julia release only.
+- README and SECURITY.md revised; the badge row lists the checks that run and reads the Julia bound from `Project.toml`.
+
 ## [0.5.0] - 2026-10-26
 
 ### Added
