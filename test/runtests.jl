@@ -354,30 +354,39 @@ end
             @test_throws ArgumentError load_config(path)
         end
 
-        # A syntax error is reported by kind and line number; the line itself, here the
-        # password line, is never echoed.
-        mktemp() do path, io
-            write(io,
-                  "[[targets]]\nname = \"N1\"\nhost = \"10.0.0.1\"\nuser = \"u\"\npassword = \"never-echoed\" x\n")
-            close(io)
-            syntax_error = try
-                load_config(path)
-                nothing
-            catch err
-                err
+        # A syntax error is reported by kind and line number. The line itself is never
+        # echoed: it may be the password line, or a password pasted without its key. No
+        # parser error stays on the exception stack as a cause either, because the
+        # display of an uncaught error prints causes, and that of a parser error prints
+        # the line.
+        head = "[[targets]]\nname = \"N1\"\n"
+        for (text, line) in
+            ((head * "host = \"10.0.0.1\"\nuser = \"u\"\npassword = \"never-echoed\" x\n",
+              5),
+             (head * "password = \"never-echoed\n", 3),
+             (head * "never-echoed\nhost = \"10.0.0.1\"\n", 3),
+             (head * "= 1\n", 3),
+             ("[globals\n", 1))
+            mktemp() do path, io
+                write(io, text)
+                close(io)
+                syntax_error = try
+                    load_config(path)
+                    nothing
+                catch err
+                    err
+                end
+                @test syntax_error isa ArgumentError
+                @test occursin("near line $(line).", sprint(showerror, syntax_error))
+                @test !occursin("never-echoed", sprint(showerror, syntax_error))
+                causes = try
+                    load_config(path)
+                    0
+                catch
+                    length(current_exceptions())
+                end
+                @test causes == 1
             end
-            @test syntax_error isa ArgumentError
-            @test occursin("near line 5", sprint(showerror, syntax_error))
-            @test !occursin("never-echoed", sprint(showerror, syntax_error))
-            # No parser error stays on the exception stack as a cause: the display of an
-            # uncaught error prints causes, and that of a parser error prints the line.
-            causes = try
-                load_config(path)
-                0
-            catch
-                length(current_exceptions())
-            end
-            @test causes == 1
         end
 
         # A file its owner cannot read is a configuration error, not a crash. Root reads

@@ -167,12 +167,17 @@ end
 """
     syntax_error_line(err::TOML.ParserError)::Int
 
-Line of a TOML syntax error, or 0 when the parser reports none. After an error at the
-end of a line the parser stands on the next one, with column -1.
+Number of the line that `showerror` would print for `err`: the line that holds the
+position of the error in the source text. The `line` field of the parser is not used,
+because it is ahead by one whenever the last character read was a newline. It is the
+fallback, with 0, when the parser kept no source text.
 """
 function syntax_error_line(err::TOML.ParserError)::Int
-    line = something(err.line, 0)
-    return something(err.column, 0) < 0 ? line - 1 : line
+    text = err.str
+    position = err.pos
+    (text === nothing || position === nothing) && return something(err.line, 0)
+    before = prevind(text, clamp(position, 1, ncodeunits(text) + 1))
+    return count(==('\n'), SubString(text, 1, before)) + 1
 end
 
 """
