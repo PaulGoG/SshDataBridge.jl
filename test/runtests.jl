@@ -846,6 +846,16 @@ end
         # A child killed by a signal reports 128 + signal, not 0
         @test run_authenticated(`sh -c 'kill -9 $$'`, password).exitcode == 137
 
+        # Both streams are read to end-of-file, here beyond the capacity of a pipe
+        flood = run_authenticated(`sh -c 'read -r x; i=0; while [ $i -lt 20000 ]; do echo out-line; echo err-line >&2; i=$((i+1)); done'`,
+                                  password)
+        @test flood.exitcode == 0
+        @test count(==('\n'), flood.stdout) == 20000
+        @test count(==('\n'), flood.stderr) == 20000
+        captured = SshDataBridge.run_captured(`sh -c 'i=0; while [ $i -lt 20000 ]; do echo out-line; i=$((i+1)); done; exit 4'`)
+        @test captured.exitcode == 4
+        @test count(==('\n'), captured.stdout) == 20000
+
         # command_string never renders the environment
         secret_cmd = setenv(`echo hello`, "SSHPASS" => password)
         @test command_string(secret_cmd) == "echo hello"

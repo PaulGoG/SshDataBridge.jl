@@ -9,6 +9,17 @@ function exit_status(process::Base.Process)::Int
 end
 
 """
+    drain(pipe::Pipe)::Task
+
+Close the write end of `pipe` that the parent holds and return a task that reads the pipe
+to end-of-file as a `String`. To be called once the child has been started.
+"""
+function drain(pipe::Pipe)::Task
+    close(pipe.in)
+    return @async read(pipe, String)
+end
+
+"""
     run_authenticated(cmd::Cmd, password::AbstractString)
 
 Run `cmd`, whose first words must be `sshpass -d 0`, feeding `password` followed by a
@@ -18,42 +29,52 @@ nothing: a non-zero exit status is reported, a signal-terminated child reports
 `128 + signal`, and a command that cannot be started reports `-1` with the reason in
 `stderr`. `Base.IOError` raised while writing the password is ignored, because it only
 means the child exited before reading it (for example a refused connection).
+
+Both streams are read to end-of-file. Buffers handed to `pipeline` are not enough on
+Julia 1.10, where `wait` returns when the child exits, not when its output has been
+copied, so that the output could be read incomplete or empty.
 """
 function run_authenticated(cmd::Cmd, password::AbstractString)
-    out_buffer = IOBuffer()
-    err_buffer = IOBuffer()
+    out = Pipe()
+    err = Pipe()
     process = try
-        open(pipeline(ignorestatus(cmd); stdout=out_buffer, stderr=err_buffer), "w")
-    catch err
-        err isa Base.IOError || rethrow()
+        open(pipeline(ignorestatus(cmd); stdout=out, stderr=err), "w")
+    catch e
+        e isa Base.IOError || rethrow()
         return (; exitcode=-1, stdout="",
-                stderr="could not start $(first(cmd.exec)): $(sprint(showerror, err))")
+                stderr="could not start $(first(cmd.exec)): $(sprint(showerror, e))")
     end
+    stdout_reader = drain(out)
+    stderr_reader = drain(err)
     try
         write(process.in, password)
         write(process.in, '\n')
-    catch err
-        err isa Base.IOError || rethrow()
+    catch e
+        e isa Base.IOError || rethrow()
     end
     close(process.in)
     wait(process)
-    return (; exitcode=exit_status(process), stdout=String(take!(out_buffer)),
-            stderr=String(take!(err_buffer)))
+    return (; exitcode=exit_status(process), stdout=fetch(stdout_reader)::String,
+            stderr=fetch(stderr_reader)::String)
 end
 
 """
     run_captured(cmd::Cmd)
 
-Run a command that needs no credentials, capturing standard output and standard error.
-Returns `(; exitcode, stdout, stderr)`; a non-zero exit status is reported, not thrown,
-and a signal-terminated child reports `128 + signal`.
+Run a command that needs no credentials, capturing standard output and standard error,
+both read to end-of-file as in [`run_authenticated`](@ref). Returns
+`(; exitcode, stdout, stderr)`; a non-zero exit status is reported, not thrown, and a
+signal-terminated child reports `128 + signal`.
 """
 function run_captured(cmd::Cmd)
-    out_buffer = IOBuffer()
-    err_buffer = IOBuffer()
-    process = run(pipeline(ignorestatus(cmd); stdout=out_buffer, stderr=err_buffer))
-    return (; exitcode=exit_status(process), stdout=String(take!(out_buffer)),
-            stderr=String(take!(err_buffer)))
+    out = Pipe()
+    err = Pipe()
+    process = run(pipeline(ignorestatus(cmd); stdout=out, stderr=err); wait=false)
+    stdout_reader = drain(out)
+    stderr_reader = drain(err)
+    wait(process)
+    return (; exitcode=exit_status(process), stdout=fetch(stdout_reader)::String,
+            stderr=fetch(stderr_reader)::String)
 end
 
 """
