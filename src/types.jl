@@ -50,7 +50,8 @@ A remote compute node and the layout of its campaign directory.
 
 `remote_dir` and `output_subdir` are stored normalized: `.` segments, repeated slashes,
 and trailing slashes are removed on construction, so that every command names the
-directory in one spelling.
+directory in one spelling. An `output_subdir` that is `.` itself stays `.`, the base
+directory.
 """
 struct BridgeTarget
     name::String
