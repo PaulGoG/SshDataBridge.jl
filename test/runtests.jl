@@ -11,8 +11,15 @@ using SshDataBridge: validate_remote_path_safety, run_authenticated, command_str
                      build_push_command, build_pull_command, prepare_local_pull_directory,
                      assert_clean_git_tree
 using Aqua
-using JET
 using ExplicitImports
+
+# JET follows the compiler, and each of its release series supports only a few Julia
+# minors. It runs on the stable release alone: the LTS resolves an old series, and a
+# pre-release may be ahead of JET.
+const RUN_JET = VERSION >= v"1.12" && isempty(VERSION.prerelease)
+if RUN_JET
+    using JET
+end
 
 const STUB_SCRIPT = raw"""
 #!/bin/sh
@@ -95,8 +102,10 @@ end
             Aqua.test_all(SshDataBridge)
         end
 
-        @testset "JET" begin
-            JET.test_package(SshDataBridge; target_modules=[SshDataBridge])
+        if RUN_JET
+            @testset "JET" begin
+                JET.test_package(SshDataBridge; target_modules=[SshDataBridge])
+            end
         end
 
         @testset "ExplicitImports" begin
