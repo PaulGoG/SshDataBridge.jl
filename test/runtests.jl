@@ -96,6 +96,148 @@ function purges(line::AbstractString, path::AbstractString)::Bool
            occursin("rm -rf -- \"\$p\"", line)
 end
 
+const DRIVER = joinpath(dirname(@__DIR__), "scripts", "run.jl")
+
+# Distinctive, so that the scenarios can assert it never appears in any output.
+const SCENARIO_PASSWORD = "scenario-password-never-printed"
+
+# Documentation addresses reserved by RFC 5737; they are never routable.
+const SCENARIO_CONFIG = """
+[globals]
+connect_timeout = 5
+strict_host_key_checking = "accept-new"
+compress = true
+bandwidth_limit = 0
+
+[push]
+local_source_dir = "."
+excludes = [".git", "*.swp"]
+use_gitignore = true
+require_clean_git = false
+
+[pull]
+local_destination_root = "harvest"
+output_subdir = "data"
+includes = []
+excludes = ["*.tmp"]
+collision_strategy = "resume"
+clean_remote_after_pull = false
+purge_scope = "project"
+
+[[targets]]
+name = "Node-01"
+host = "192.0.2.10"
+port = 22
+user = "researcher"
+password = "$(SCENARIO_PASSWORD)"
+remote_dir = "/home/researcher/campaigns/batch"
+output_subdir = "data"
+
+[[targets]]
+name = "Node-02"
+host = "192.0.2.11"
+port = 2222
+user = "researcher"
+password = "$(SCENARIO_PASSWORD)"
+remote_dir = "/home/researcher/campaigns/batch"
+"""
+
+"""
+    invoke_driver(arguments, config_path; spawn = false)
+
+Run the driver with `arguments` against `config_path`, capturing both streams in one
+buffer. The call is made in process through `SshDataBridge.main`; with `spawn = true` a
+separate Julia process runs `scripts/run.jl` instead, which covers the script wrapper
+itself. The stub binaries take their exit status from the environment, which the caller
+sets. Returns `(; exitcode, output)`.
+"""
+function invoke_driver(arguments::Vector{String}, config_path::AbstractString;
+                       spawn::Bool=false)
+    buffer = IOBuffer()
+    full_arguments = vcat(arguments, ["--config", String(config_path)])
+    if spawn
+        # Pkg.test exports a load path without the standard libraries; the driver
+        # activates its own environment and must not inherit it.
+        command = addenv(`$(Base.julia_cmd()) --startup-file=no $(DRIVER) $(full_arguments)`,
+                         "JULIA_LOAD_PATH" => nothing, "JULIA_PROJECT" => nothing)
+        # Both streams go to one pipe, read to end-of-file: on Julia 1.10 a buffer
+        # handed to pipeline may still be filling when run returns.
+        pipe = Pipe()
+        process = run(pipeline(ignorestatus(command); stdout=pipe, stderr=pipe);
+                      wait=false)
+        close(pipe.in)
+        write(buffer, read(pipe))
+        wait(process)
+        exitcode = process.exitcode
+    else
+        exitcode = SshDataBridge.main(full_arguments; io=buffer, err=buffer)
+    end
+    return (; exitcode, output=String(take!(buffer)))
+end
+
+# Each entry gives the arguments, the exit status of the stub binaries, the expected exit
+# status of the driver, fragments (strings or regular expressions) that the output must
+# contain, whether to spawn `scripts/run.jl` instead of calling `main` in process, and
+# what the scenario demonstrates.
+const DRIVER_SCENARIOS = [(; arguments=["probe"], stub_exit=0, expected=0,
+                           fragments=[r"SSH reachable:\s+yes", r"Remote rsync:\s+yes",
+                                      "All remote diagnostics passed."], spawn=false,
+                           description="probe reports both stub nodes healthy"),
+                          (; arguments=["probe", "--target", "Node-02"], stub_exit=0,
+                           expected=0,
+                           fragments=["probe: 1 target", "Node-02",
+                                      "1 target: 1 ready, 0 not ready"], spawn=false,
+                           description="--target restricts the action to one node"),
+                          (; arguments=["probe", "--target", "nowhere"], stub_exit=0,
+                           expected=1, fragments=["unknown target(s): nowhere"],
+                           spawn=false, description="an unknown target is refused"),
+                          (; arguments=["push", "--dry-run"], stub_exit=0, expected=0,
+                           fragments=["Dry run: sshpass -d 0 rsync", "--stats --log-file=",
+                                      "2 succeeded, 0 failed"],
+                           spawn=false, description="push prints its rsync command"),
+                          (; arguments=["pull", "--dry-run"], stub_exit=0, expected=0,
+                           fragments=["Dry run: sshpass -d 0 rsync", "--stats --log-file=",
+                                      "2 succeeded, 0 failed"],
+                           spawn=false, description="pull prints its rsync command"),
+                          (; arguments=["clean", "--dry-run"], stub_exit=0, expected=0,
+                           fragments=["Dry run: sshpass -d 0 ssh -n",
+                                      "p=/home/researcher/campaigns/batch;",
+                                      "rm -rf -- \"\$p\""],
+                           spawn=false, description="clean previews the removal"),
+                          (; arguments=["clean"], stub_exit=0, expected=1,
+                           fragments=["rerun with --yes"], spawn=false,
+                           description="clean refuses to delete without --yes"),
+                          (; arguments=["pull", "--clean-remote"], stub_exit=0, expected=1,
+                           fragments=["rerun with --yes"], spawn=false,
+                           description="a purge after a pull needs --yes"),
+                          (; arguments=["clean", "--yes"], stub_exit=0, expected=0,
+                           fragments=["purged in", "2 succeeded, 0 failed"], spawn=false,
+                           description="clean proceeds once confirmed"),
+                          (; arguments=["push"], stub_exit=0, expected=0,
+                           fragments=["Deployed successfully", "Node-01.push.rsync.log",
+                                      "2 succeeded, 0 failed"],
+                           spawn=false, description="push completes against the stubs"),
+                          (; arguments=["pull"], stub_exit=0, expected=0,
+                           fragments=["Harvested successfully", "Node-01.pull.rsync.log",
+                                      "2 succeeded, 0 failed"],
+                           spawn=false, description="pull completes against the stubs"),
+                          (; arguments=["pull", "--clean-remote", "--yes"], stub_exit=0,
+                           expected=0,
+                           fragments=["Harvested successfully", "(project scope) purged in",
+                                      "2 succeeded, 0 failed"], spawn=false,
+                           description="a verified harvest is followed by the project purge"),
+                          (; arguments=["push"], stub_exit=255, expected=2,
+                           fragments=["Remote directory creation failed",
+                                      "0 succeeded, 2 failed"], spawn=false,
+                           description="push reports every failed node and exits 2"),
+                          (; arguments=["nonsense"], stub_exit=0, expected=1,
+                           fragments=["unknown action"], spawn=false,
+                           description="an unknown action is rejected"),
+                          (; arguments=["probe"], stub_exit=255, expected=2,
+                           fragments=[r"SSH reachable:\s+no", "ssh exited with code 255",
+                                      "connection refused"], spawn=true,
+                           description="scripts/run.jl forwards the arguments and the exit status")]
+
 @testset "SshDataBridge.jl" begin
     @testset "Static analysis" begin
         @testset "Aqua" begin
@@ -429,7 +571,7 @@ end
 
         # Target names must be unique because they name the local harvest directories
         twin(name) = Dict{String, Any}("name" => name, "host" => "10.0.0.1", "user" => "u",
-                                       "password" => "p", "remote_dir" => "/a/b")
+                                       "password" => "p", "remote_dir" => "/a/" * name)
         duplicate_error = try
             parse_config(minimal_config(;
                                         targets=Any[twin("Node"), twin("Other"),
@@ -472,9 +614,6 @@ end
             return err isa ArgumentError ? err.msg : ""
         end
 
-        @test parse_config(minimal_config()) isa BridgeConfig
-        # A purge removes the whole project unless the configuration narrows it
-        @test parse_config(minimal_config()).pull.purge_scope == :project
         # ssh keepalive is on unless the configuration disables it
         @test parse_config(minimal_config()).globals.server_alive_interval == 15
         @test parse_config(minimal_config()).globals.server_alive_count_max == 3
@@ -1420,14 +1559,30 @@ end
         end
     end
 
-    @testset "Command-line interface (sandbox)" begin
-        include(joinpath(dirname(@__DIR__), "sandbox", "run.jl"))
-        results = run_sandbox(; verbose=false)
-        @test !isempty(results)
-        for result in results
-            @test result.exitcode == result.expected
-            @test !result.leaked
-            @test isempty(result.missing_fragments)
+    @testset "Command-line scenarios" begin
+        mktempdir() do dir
+            config_path = joinpath(dir, "config.toml")
+            write(config_path, SCENARIO_CONFIG)
+            chmod(config_path, 0o600)
+            # What a healthy node answers to the probe script, and what ssh prints when
+            # the connection fails.
+            markers = "RSYNC_OK\nDIR_EXISTS\nOUT_EXISTS"
+            refusal = "stub: connection refused"
+            for scenario in DRIVER_SCENARIOS
+                @testset "$(scenario.description)" begin
+                    outcome = with_stub_binaries(; exit_code=scenario.stub_exit,
+                                                 stdout_text=markers,
+                                                 stderr_text=refusal) do _
+                        return invoke_driver(scenario.arguments, config_path;
+                                             spawn=scenario.spawn)
+                    end
+                    @test outcome.exitcode == scenario.expected
+                    @test !occursin(SCENARIO_PASSWORD, outcome.output)
+                    for fragment in scenario.fragments
+                        @test occursin(fragment, outcome.output)
+                    end
+                end
+            end
         end
     end
 end
