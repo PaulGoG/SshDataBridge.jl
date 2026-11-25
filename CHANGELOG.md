@@ -4,6 +4,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 
 ## [Unreleased]
 
+### Added
+
+- A documentation site with the configuration reference and the library API, built with Documenter from `docs/` and deployed by CI.
+
 ### Fixed
 
 - On Julia 1.10 the output of a child process could be read before it had been copied (about once in 30 000 runs on the development machine), so a verification pass with pending items could pass as complete and let a purge run. Both streams are now read to end-of-file on every Julia version.
@@ -21,6 +25,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 
 ### Changed
 
+- **Breaking:** two targets on the same host and port whose remote directories overlap, equal or one inside the other, are refused when the configuration is loaded. The purge of one would have removed the output of the other before it was harvested.
+- **Breaking:** the default `[pull].excludes` no longer contain `core.*`. The pattern also matched result files such as `core.h5`, which a harvest then skipped and a purge destroyed. A configuration that relied on the default to skip core dumps has to list the pattern itself.
+- `sandbox/run.jl` is gone. Its command-line scenarios run in the test suite, on the stub binaries the other tests use.
+- `format/format.jl` no longer parses every source file before formatting, and `format/activate.jl` no longer deletes a manifest resolved by another Julia version.
+- The workflows pin their actions by commit.
 - A local directory that cannot be created is reported as `Could not create the log directory` or `Could not prepare the local destination`, no longer as a "refusal".
 - The formatting check runs in its own workflow, `Format.yml`, and the test suite runs JET on the stable Julia release only.
 - README and SECURITY.md revised; the badge row lists the checks that run and reads the Julia bound from `Project.toml`.

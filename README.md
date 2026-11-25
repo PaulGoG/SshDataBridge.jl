@@ -14,8 +14,8 @@ Deploys a simulation code base to several remote compute nodes with rsync over s
 SshDataBridge.jl/
 ├── src/                   # Package: configuration parser, ssh and rsync commands, CLI driver
 ├── scripts/run.jl         # Command-line entry point: probe | push | pull | clean
-├── sandbox/run.jl         # Every action exercised against stub binaries, no network
 ├── test/                  # Test suite and its environment
+├── docs/                  # Documentation site: configuration reference and library API
 ├── format/                # Formatting environment and script
 ├── config.example.toml    # Configuration template
 ├── activate.jl            # Activates and instantiates the root environment
@@ -24,7 +24,7 @@ SshDataBridge.jl/
 └── SECURITY.md
 ```
 
-The complete tree is under [Repository layout](#repository-layout).
+The complete tree is under [Repository layout](#repository-layout). The configuration reference and the library API are published as a [documentation site](https://PaulGoG.github.io/SshDataBridge.jl/).
 
 ## Environment setup
 
@@ -42,6 +42,7 @@ git clone https://github.com/PaulGoG/SshDataBridge.jl.git
 cd SshDataBridge.jl
 julia activate.jl          # root environment (standard libraries only)
 julia test/activate.jl     # test environment, developed against the local source
+julia docs/activate.jl     # documentation environment
 julia format/activate.jl   # formatting environment
 ```
 
@@ -64,7 +65,7 @@ julia scripts/run.jl pull --target Cluster-Node-02      # one target only; --tar
 julia scripts/run.jl clean --yes                        # purge without harvesting
 julia scripts/run.jl clean --dry-run                    # show what a purge would remove
 julia test/runtests.jl                                  # test suite
-julia sandbox/run.jl                                    # every action against stub binaries, no network
+julia docs/make.jl                                      # build the documentation into docs/build
 julia format/format.jl                                  # format the sources
 julia format/format.jl --check                          # verify formatting without writing
 ```
@@ -106,7 +107,7 @@ Every action runs on all selected targets concurrently, and a failure on one nod
 
 ## Configuration
 
-`config.toml` holds passwords in plain text: git ignores every `.toml` file in the clone except the tracked ones, and the loader refuses a file that grants any permission to group or others. Unknown keys and values of the wrong type are rejected before any node is contacted, and the message names the key. Relative local paths are resolved against the directory of the configuration file, and a leading `~` expands to the home directory. `remote_dir` and `output_subdir` must not contain `..` segments or the characters `*`, `?`, `[`, `]`, which rsync would expand on the node. `[push].local_source_dir`, `[pull].local_destination_root`, and the target keys `name`, `host`, `user`, `password`, and `remote_dir` are mandatory; every other key has a default.
+`config.toml` holds passwords in plain text: git ignores every `.toml` file in the clone except the tracked ones, and the loader refuses a file that grants any permission to group or others. Unknown keys and values of the wrong type are rejected before any node is contacted, and the message names the key. Relative local paths are resolved against the directory of the configuration file, and a leading `~` expands to the home directory. `remote_dir` and `output_subdir` must not contain `..` segments or the characters `*`, `?`, `[`, `]`, which rsync would expand on the node. Two targets on the same host and port must not share a `remote_dir` or nest one inside the other, because the purge of one would remove the output of the other before it is harvested. `[push].local_source_dir`, `[pull].local_destination_root`, and the target keys `name`, `host`, `user`, `password`, and `remote_dir` are mandatory; every other key has a default.
 
 ```toml
 [globals]
@@ -128,7 +129,7 @@ require_clean_git = false             # refuse to deploy from a dirty working tr
 local_destination_root = "~/campaigns/sim_batch_01/harvest"   # mandatory; one subdirectory per target, plus the rsync logs
 output_subdir = "output"              # default remote output directory, relative to remote_dir
 includes = []                         # harvest only matching files; empty = everything
-excludes = ["*.tmp", "core.*", "*~"]  # rsync exclude patterns
+excludes = ["*.tmp", "*~"]            # rsync exclude patterns (the default)
 collision_strategy = "resume"         # one of: "resume" | "backup" | "abort"
 clean_remote_after_pull = false       # purge after a verified harvest (needs --yes)
 purge_scope = "project"               # one of: "project" | "output"
@@ -156,7 +157,7 @@ With `use_gitignore` the `.gitignore` rules of the source tree are applied throu
 
 **pull** retrieves `remote_dir/output_subdir/` of every target into `local_destination_root/<name>/`. `--partial` resumes interrupted transfers. The files transferred are appended to `local_destination_root/<name>.pull.rsync.log`, which is the record of what was retrieved before any purge, and the summary line reports the file count and size. With `includes` set, only files matching one of the patterns are harvested and directories left empty are skipped; `excludes` take precedence. A purge cannot be combined with include patterns, because the files the filter leaves behind would be lost. When the local directory already exists, `collision_strategy` decides: `resume` reuses it, `backup` renames it to `<name>#1`, `<name>#2`, ... before creating a fresh one, `abort` fails the target. A destination that cannot be created fails that target only.
 
-**clean** removes the directory selected by `purge_scope`: the whole `remote_dir` by default, or only the output directory with `"output"`. The default is the whole project because a campaign deploys code that is not meant to stay on the nodes. On the command line, every purge outside a dry run requires `--yes`. A purge destroys everything in its scope that the harvest did not copy: files matching `excludes` (the default list contains `core.*`, which also matches a data file named `core.h5`) and, with the `project` scope, everything outside `output_subdir`.
+**clean** removes the directory selected by `purge_scope`: the whole `remote_dir` by default, or only the output directory with `"output"`. The default is the whole project because a campaign deploys code that is not meant to stay on the nodes. On the command line, every purge outside a dry run requires `--yes`. A purge destroys everything in its scope that the harvest did not copy: files matching `excludes` (by default `*.tmp` and `*~`) and, with the `project` scope, everything outside `output_subdir`.
 
 The same purge runs after a pull when `--clean-remote` is given or `clean_remote_after_pull` is set, but only once the harvest is verified. The transfer is repeated as `rsync --dry-run --itemize-changes`. If that pass still reports an item (a job still writing, for example), nothing is deleted and the target fails, although its data were retrieved. Rerun the pull for that target (`--target <name>`) once the node is idle. The pass is a snapshot: output written after it is deleted unharvested, so purge only nodes whose jobs have finished.
 
@@ -180,6 +181,7 @@ Host keys follow `strict_host_key_checking`: `accept-new` (default) records a ho
 - Password authentication only; ssh keys and agents are not used.
 - `push` never deletes remote files.
 - A purge removes `remote_dir` only. Julia stores the source text of every precompiled package in its cache files, so a private package deployed with this tool stays readable under `~/.julia/compiled/` on the node until that cache is removed as well.
+- Two targets count as one node only when their `host` and `port` are written alike. An alias and an address of the same machine are not recognized, so the refusal of overlapping remote directories does not cover them.
 - Targets run as cooperative tasks on one thread; the work is bound by the network and by rsync.
 - No retry logic; rerun the action with `--target` for the targets that failed.
 
@@ -191,11 +193,11 @@ Host keys follow `strict_host_key_checking`: `accept-new` (default) records a ho
 ```
 SshDataBridge.jl/
 ├── .github/
-│   ├── dependabot.yml       # Weekly updates of the GitHub Actions pins and the test and formatting environments
+│   ├── dependabot.yml       # Weekly updates of the GitHub Actions pins and the test, documentation, and formatting environments
 │   └── workflows/
-│       ├── CI.yml           # Test suite on Julia LTS, stable, and pre-release
+│       ├── CI.yml           # Test suite on Julia LTS, stable, and pre-release; documentation build and deployment
 │       └── Format.yml       # Formatting check
-├── .gitignore               # Every .toml except the tracked ones, coverage and editor artifacts
+├── .gitignore               # Every .toml except the tracked ones; documentation build, coverage, and editor artifacts
 ├── .JuliaFormatter.toml     # YAS style, 92 columns
 ├── CHANGELOG.md             # Release history
 ├── LICENSE                  # MIT
@@ -204,12 +206,19 @@ SshDataBridge.jl/
 ├── SECURITY.md              # Threat model and vulnerability reporting
 ├── activate.jl              # Activates and instantiates the root environment
 ├── config.example.toml      # Annotated configuration template
+├── docs/
+│   ├── Project.toml         # Documentation environment (Documenter)
+│   ├── activate.jl          # Activates the documentation environment against the local source
+│   ├── make.jl              # Builds the site into docs/build; CI deploys it
+│   └── src/
+│       ├── index.md         # Overview, installation, use from Julia
+│       ├── configuration.md # Rules of the configuration file and the template
+│       ├── api.md           # Exported names and SshDataBridge.main
+│       └── internals.md     # Docstrings of the internal functions
 ├── format/
 │   ├── Project.toml         # Formatting environment (JuliaFormatter 2.14)
 │   ├── activate.jl          # Activates the formatting environment
-│   └── format.jl            # Formats the repository; --check verifies without writing; refuses files that do not parse
-├── sandbox/
-│   └── run.jl               # Exercises every action against stub binaries, no network
+│   └── format.jl            # Formats the repository; --check verifies without writing
 ├── scripts/
 │   └── run.jl               # Thin entry point around SshDataBridge.main
 ├── src/
@@ -224,7 +233,7 @@ SshDataBridge.jl/
 └── test/
     ├── Project.toml         # Test environment: Aqua, JET, ExplicitImports
     ├── activate.jl          # Activates the test environment against the local source
-    └── runtests.jl          # Static analysis, unit tests, stub-binary process tests
+    └── runtests.jl          # Static analysis, unit tests, stub-binary process tests, command-line scenarios
 ```
 
 </details>
