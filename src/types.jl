@@ -222,7 +222,11 @@ end
 Complete configuration: global transport options, push and pull parameters, and the
 non-empty list of targets. Target names must be unique, because each one names the
 local harvest directory of its target and two targets harvested concurrently into the
-same directory would overwrite each other's results.
+same directory would overwrite each other's results. Two targets on the same host and
+port must not have overlapping remote directories, equal or one inside the other,
+because the purge of one would remove the output of the other before it is harvested.
+That comparison is lexical: it does not recognize two names of one machine, nor a
+symbolic link on the node.
 """
 struct BridgeConfig
     globals::GlobalOptions
@@ -241,6 +245,14 @@ struct BridgeConfig
         duplicated = unique!(String[n for n in names if count(==(n), names) > 1])
         if !isempty(duplicated)
             throw(ArgumentError("Target names must be unique because each names a local harvest directory; duplicated: $(join(duplicated, ", "))."))
+        end
+        for index in eachindex(targets), other_index in (index + 1):lastindex(targets)
+            target = targets[index]
+            other = targets[other_index]
+            if node_key(target.host, target.port) == node_key(other.host, other.port) &&
+               paths_overlap(target.remote_dir, other.remote_dir)
+                throw(ArgumentError("Targets '$(target.name)' and '$(other.name)' are on the same host and port and their remote directories overlap ('$(target.remote_dir)' and '$(other.remote_dir)'): the purge of one would remove the output of the other before it is harvested. Use one target per project directory."))
+            end
         end
         return new(globals, push, pull, Vector{BridgeTarget}(targets))
     end

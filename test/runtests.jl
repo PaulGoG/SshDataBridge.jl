@@ -614,6 +614,59 @@ const DRIVER_SCENARIOS = [(; arguments=["probe"], stub_exit=0, expected=0,
             return err isa ArgumentError ? err.msg : ""
         end
 
+        # Two targets on one host and port must not have overlapping remote directories
+        node(name, host, port, dir) = BridgeTarget(name, host, port, "u", "p", dir)
+        function paired(first_target, second_target)
+            return BridgeConfig(GlobalOptions(), PushOptions("/x"), PullOptions("/y"),
+                                [first_target, second_target])
+        end
+        overlap_message = config_error_message_of() do
+            return paired(node("A", "10.0.0.1", 22, "/a/b"),
+                          node("B", "10.0.0.1", 22, "/a/b"))
+        end
+        @test occursin("'A'", overlap_message)
+        @test occursin("'B'", overlap_message)
+        @test occursin("overlap", overlap_message)
+        # One inside the other
+        @test_throws ArgumentError paired(node("A", "10.0.0.1", 22, "/a/b"),
+                                          node("B", "10.0.0.1", 22, "/a/b/c"))
+        # In either order
+        @test_throws ArgumentError paired(node("A", "10.0.0.1", 22, "/a/b/c"),
+                                          node("B", "10.0.0.1", 22, "/a/b"))
+        # One directory in two spellings
+        @test_throws ArgumentError paired(node("A", "10.0.0.1", 22, "/a/b/"),
+                                          node("B", "10.0.0.1", 22, "/a//b/."))
+        # Host case and trailing dot
+        @test_throws ArgumentError paired(node("A", "Node01.Example.org", 22, "/a/b"),
+                                          node("B", "node01.example.org.", 22, "/a/b"))
+        # Sibling with a common name prefix
+        @test paired(node("A", "10.0.0.1", 22, "/a/b"),
+                     node("B", "10.0.0.1", 22, "/a/bc")) isa BridgeConfig
+        # Disjoint directories
+        @test paired(node("A", "10.0.0.1", 22, "/a/b"),
+                     node("B", "10.0.0.1", 22, "/a/c")) isa BridgeConfig
+        # Another port is another node
+        @test paired(node("A", "10.0.0.1", 22, "/a/b"),
+                     node("B", "10.0.0.1", 2222, "/a/b")) isa BridgeConfig
+        # Another host
+        @test paired(node("A", "10.0.0.1", 22, "/a/b"),
+                     node("B", "10.0.0.2", 22, "/a/b")) isa BridgeConfig
+        # The parser refuses the same overlap
+        overlapping = Any[merge(minimal_target(), Dict("name" => "One")),
+                          merge(minimal_target(), Dict("name" => "Two"))]
+        @test_throws ArgumentError parse_config(minimal_config(; targets=overlapping))
+
+        @test parse_config(minimal_config()) isa BridgeConfig
+        # A purge removes the whole project unless the configuration narrows it
+        @test parse_config(minimal_config()).pull.purge_scope == :project
+        # No default exclude may match a result file: a purge destroys what the excludes
+        # leave
+        @test parse_config(minimal_config()).pull.excludes == ["*.tmp", "*~"]
+        @test PullOptions("/y").excludes == ["*.tmp", "*~"]
+        # The tracked template agrees with the default excludes
+        parsed = SshDataBridge.TOML.parsefile(joinpath(dirname(@__DIR__),
+                                                       "config.example.toml"))
+        @test parsed["pull"]["excludes"] == ["*.tmp", "*~"]
         # ssh keepalive is on unless the configuration disables it
         @test parse_config(minimal_config()).globals.server_alive_interval == 15
         @test parse_config(minimal_config()).globals.server_alive_count_max == 3
@@ -1555,6 +1608,37 @@ const DRIVER_SCENARIOS = [(; arguments=["probe"], stub_exit=0, expected=0,
             @test SshDataBridge.main(["probe", "--target", "nowhere", "--config", path];
                                      io=io, err=err) == 1
             @test occursin("unknown target(s): nowhere", String(take!(err)))
+            @test isempty(take!(io))
+        end
+
+        # Overlapping targets are refused when the configuration is loaded, whatever the
+        # action or the selection
+        mktemp() do path, cfg
+            write(cfg, """
+            [push]
+            local_source_dir = "."
+            [pull]
+            local_destination_root = "harvest"
+            [[targets]]
+            name = "One"
+            host = "192.0.2.10"
+            user = "researcher"
+            password = "pw"
+            remote_dir = "/home/researcher/campaigns/batch"
+            [[targets]]
+            name = "Two"
+            host = "192.0.2.10"
+            user = "researcher"
+            password = "pw"
+            remote_dir = "/home/researcher/campaigns/batch/sub"
+            """)
+            close(cfg)
+            @test SshDataBridge.main(["probe", "--config", path]; io=io, err=err) == 1
+            @test occursin("overlap", String(take!(err)))
+            @test isempty(take!(io))
+            @test SshDataBridge.main(["clean", "--yes", "--target", "One", "--config",
+                                      path]; io=io, err=err) == 1
+            @test occursin("overlap", String(take!(err)))
             @test isempty(take!(io))
         end
     end

@@ -54,7 +54,6 @@ includes = []
 # rsync exclude patterns for pull (the default list)
 excludes = [
     "*.tmp",
-    "core.*",
     "*~",
 ]
 
@@ -83,7 +82,7 @@ user = "scientist"  # letter or underscore, then letters, digits, '.', '_', '-';
 # Authentication password
 password = "example_password_1"
 
-# Base directory of the campaign on the node
+# Base directory of the campaign on the node; no other target on the same host and port may use it or a directory inside it
 remote_dir = "/home/scientist/campaigns/sim_batch_01"  # absolute path without '..' segments or '*', '?', '[', ']'
 
 # Remote output subdirectory relative to remote_dir (optional, defaults to [pull].output_subdir)

@@ -17,7 +17,9 @@ const DEFAULT_PUSH_EXCLUDES = String[".git", ".github", ".vscode", "*.swp", "*~"
 const DEFAULT_USE_GITIGNORE = true
 const DEFAULT_REQUIRE_CLEAN_GIT = false
 const DEFAULT_OUTPUT_SUBDIR = "output"
-const DEFAULT_PULL_EXCLUDES = String["*.tmp", "core.*", "*~"]
+# Only patterns that cannot plausibly name a result file: a purge destroys what the
+# excludes leave on the node.
+const DEFAULT_PULL_EXCLUDES = String["*.tmp", "*~"]
 const DEFAULT_COLLISION_STRATEGY = :resume
 const DEFAULT_CLEAN_REMOTE_AFTER_PULL = false
 # A campaign deploys code that must not stay on the nodes, so a purge removes the whole
@@ -75,6 +77,27 @@ that a transfer could act on another directory than the one named, while the pur
 removes the path as written.
 """
 has_rsync_wildcards(path::AbstractString)::Bool = occursin(RSYNC_WILDCARD_PATTERN, path)
+
+"""
+    paths_overlap(a::AbstractString, b::AbstractString)::Bool
+
+Whether two normalized absolute paths name the same directory or one lies below the
+other. The comparison is lexical and does not follow symbolic links.
+"""
+function paths_overlap(a::AbstractString, b::AbstractString)::Bool
+    return a == b || startswith(a, b * "/") || startswith(b, a * "/")
+end
+
+"""
+    node_key(host::AbstractString, port::Integer)::Tuple{String, Int}
+
+Identity of an ssh endpoint when targets are compared: the host in lower case without a
+trailing dot, and the port. Two names of one machine, an alias and its address for
+example, are not recognized as the same node.
+"""
+function node_key(host::AbstractString, port::Integer)::Tuple{String, Int}
+    return (lowercase(String(rstrip(host, '.'))), Int(port))
+end
 
 """
     validate_remote_directory(path::AbstractString, key::AbstractString,
