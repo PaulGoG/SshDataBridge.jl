@@ -219,7 +219,14 @@ function run_driver(args::AbstractVector{<:AbstractString}, io::IO, err::IO)::In
         return 0
     end
 
-    if !isfile(options.config_path)
+    present = try
+        config_file_present(options.config_path)
+    catch e
+        e isa ArgumentError || rethrow()
+        println(err, "Error: ", e.msg)
+        return 1
+    end
+    if !present
         println(err, "Error: configuration file not found at '$(options.config_path)'.")
         if options.config_path == default_config_path()
             println(err,

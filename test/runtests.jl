@@ -288,6 +288,11 @@ const DRIVER_SCENARIOS = [(; arguments=["probe"], stub_exit=0, expected=0,
         for host in ("192.0.2.012", "0xc0.0.2.10", "0300.0.2.10", "010")
             @test_throws ArgumentError BridgeTarget("N", host, 22, "u", "p", "/d/e")
         end
+        # A numeric host that the C library does not read as an address can never connect
+        for host in ("192.168.1.256", "1.2.3.4.5", "99999999999999999999999",
+                     "2001:db8:10", "2001::db8::10", ":::")
+            @test_throws ArgumentError BridgeTarget("N", host, 22, "u", "p", "/d/e")
+        end
         for host in ("0xcafe.example.org", "007.example.org", "192.0.2.10", "10")
             @test BridgeTarget("N", host, 22, "u", "p", "/d/e").host == host
         end
@@ -545,14 +550,14 @@ const DRIVER_SCENARIOS = [(; arguments=["probe"], stub_exit=0, expected=0,
         mktemp() do path, io
             close(io)
             chmod(path, 0o000)
-            readable = try
+            denied = try
                 open(close, path)
-                true
+                nothing
             catch err
                 err isa SystemError || rethrow()
-                false
+                err
             end
-            if readable
+            if denied === nothing
                 @test_skip "unreadable configuration file"
             else
                 @test_throws ArgumentError load_config(path)
@@ -560,9 +565,42 @@ const DRIVER_SCENARIOS = [(; arguments=["probe"], stub_exit=0, expected=0,
                 @test SshDataBridge.main(["probe", "--config", path]; io=IOBuffer(),
                                          err=err) == 1
                 message = String(take!(err))
-                @test occursin("cannot be read: Permission denied.", message)
+                # The reason is the C library's text, in the locale of the process
+                @test occursin("cannot be read: $(Libc.strerror(denied.errnum)).", message)
                 @test !occursin("SystemError", message)
             end
+        end
+        # A path that cannot be inspected is a configuration error as well: a loop of
+        # symbolic links, and a file in a directory that is not searchable (skipped for
+        # root, which searches any directory).
+        mktempdir() do dir
+            loop = joinpath(dir, "loop.toml")
+            symlink(loop, loop)
+            locked = joinpath(dir, "locked")
+            mkdir(locked)
+            inside = joinpath(locked, "config.toml")
+            write(inside, "")
+            chmod(inside, 0o600)
+            chmod(locked, 0o000)
+            searchable = try
+                isfile(joinpath(locked, "absent"))
+                true
+            catch err
+                err isa Base.IOError || rethrow()
+                false
+            end
+            searchable && @test_skip "configuration file in an unsearchable directory"
+            paths = searchable ? [loop] : [loop, inside]
+            for path in paths
+                @test_throws ArgumentError load_config(path)
+                err = IOBuffer()
+                @test SshDataBridge.main(["probe", "--config", path]; io=IOBuffer(),
+                                         err=err) == 1
+                message = String(take!(err))
+                @test occursin("cannot be read: ", message)
+                @test !occursin("IOError", message)
+            end
+            chmod(locked, 0o700)
         end
         @test_throws ArgumentError load_config(joinpath(@__DIR__, "does-not-exist.toml"))
 
@@ -671,6 +709,7 @@ const DRIVER_SCENARIOS = [(; arguments=["probe"], stub_exit=0, expected=0,
                                           ("2001:DB8::10", "2001:0db8::0010"),
                                           ("::ffff:192.0.2.10", "192.0.2.10"),
                                           ("::ffff:c000:20a", "192.0.2.10"),
+                                          ("64:ff9b::192.0.2.10", "64:ff9b::c000:20a"),
                                           ("192.0.522", "192.0.2.10"),
                                           ("3221225994", "192.0.2.10"))
             @test_throws ArgumentError paired(node("A", first_host, 22, "/a/b"),

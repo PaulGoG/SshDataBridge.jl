@@ -106,39 +106,58 @@ function paths_overlap(a::AbstractString, b::AbstractString)::Bool
 end
 
 """
-    parsed_address(host::AbstractString)::Union{IPv4, IPv6, Nothing}
+    is_numeric_host(host::AbstractString)::Bool
 
-`host` as an IP address when it is a literal that the standard library parses, and
-`nothing` when it is a host name. An IPv4 address mapped into IPv6 (`::ffff:a.b.c.d`) is
-returned as that IPv4 address.
+Whether `host` can only be an IP address: it contains a `:`, or every label is a number.
+An all-numeric name is not a DNS name (RFC 3696, section 2).
 """
-function parsed_address(host::AbstractString)::Union{IPv4, IPv6, Nothing}
-    (occursin(':', host) || occursin(NUMERIC_HOST_PATTERN, host)) || return nothing
-    address = try
-        parse(IPAddr, host)
-    catch err
-        err isa Union{ArgumentError, OverflowError} || rethrow()
-        return nothing
+function is_numeric_host(host::AbstractString)::Bool
+    return occursin(':', host) || occursin(NUMERIC_HOST_PATTERN, host)
+end
+
+# Linux value of AF_INET6; the package runs on Linux only.
+const ADDRESS_FAMILY_INET6 = Cint(10)
+
+"""
+    numeric_address(host::AbstractString)::Union{Tuple{Int, UInt128}, Nothing}
+
+The address of a numeric `host` as the C library reads it, and therefore as ssh connects
+to it: `(6, value)` for an IPv6 literal (`inet_pton`), `(4, value)` for an IPv4 address,
+shortened forms such as `192.0.522` included (`inet_aton`). An IPv4 address mapped into
+IPv6 (`::ffff:a.b.c.d`) is returned as that IPv4 address. `nothing` when `host` is not
+numeric or the C library does not read it as an address.
+"""
+function numeric_address(host::AbstractString)::Union{Tuple{Int, UInt128}, Nothing}
+    is_numeric_host(host) || return nothing
+    has_control_characters(host) && return nothing
+    if occursin(':', host)
+        bytes = zeros(UInt8, 16)
+        status = @ccall inet_pton(ADDRESS_FAMILY_INET6::Cint, host::Cstring,
+                                  bytes::Ptr{UInt8})::Cint
+        status == 1 || return nothing
+        value = foldl((acc, byte) -> (acc << 8) | byte, bytes; init=UInt128(0))
+        return (value >> 32) == 0xffff ? (4, value & 0xffffffff) : (6, value)
     end
-    if address isa IPv6 && (address.host >> 32) == 0xffff
-        return IPv4(UInt32(address.host & 0xffffffff))
-    end
-    return address
+    address = Ref{UInt32}(0)
+    status = @ccall inet_aton(host::Cstring, address::Ref{UInt32})::Cint
+    return status == 0 ? nothing : (4, UInt128(ntoh(address[])))
 end
 
 """
     node_key(host::AbstractString, port::Integer)::Tuple{String, Int}
 
 Identity of an ssh endpoint when targets are compared: the host and the port. A host
-name is taken in lower case without a trailing dot. An IP address is taken by value, so
-that its spellings give one key: IPv6 groups written in full or compressed, in either
-letter case, an IPv4 address mapped into IPv6, a shortened IPv4 form. A name and its
-address, or two names of one machine, are not recognized as the same node.
+name is taken in lower case without a trailing dot. An IP address is taken by its value
+(see [`numeric_address`](@ref)), so that its spellings give one key: IPv6 groups written
+in full or compressed, in either letter case, an IPv4 address mapped into IPv6, a
+shortened IPv4 form. A name and its address, or two names of one machine, are not
+recognized as the same node.
 """
 function node_key(host::AbstractString, port::Integer)::Tuple{String, Int}
     name = lowercase(String(rstrip(host, '.')))
-    address = parsed_address(name)
-    return (address === nothing ? name : string(address), Int(port))
+    address = numeric_address(name)
+    key = address === nothing ? name : "ipv$(address[1]):$(string(address[2]; base=16))"
+    return (key, Int(port))
 end
 
 """
@@ -253,6 +272,9 @@ function validate_bridge_target_fields(name::AbstractString,
     end
     if !is_valid_host(host)
         throw(ArgumentError("Target 'host' must be a DNS hostname, an IPv4 address, or an IPv6 literal (received: '$(host)'; $(context))."))
+    end
+    if is_numeric_host(host) && numeric_address(host) === nothing
+        throw(ArgumentError("Target 'host' is numeric but not an IP address that the C library reads (received: '$(host)'; $(context))."))
     end
     if !(1 <= port <= 65535)
         throw(ArgumentError("Target 'port' must be an integer in 1:65535 (received: $(port); $(context))."))
