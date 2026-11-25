@@ -4,8 +4,12 @@
 !/Project.toml
 !/test/Project.toml
 !/format/Project.toml
+!/docs/Project.toml
 !/config.example.toml
 !/.JuliaFormatter.toml
+
+# Documentation build
+/docs/build/
 
 # Coverage artifacts
 *.jl.cov

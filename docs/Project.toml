@@ -1,0 +1,9 @@
+[deps]
+Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
+SshDataBridge = "a37c1541-b844-4821-b3b3-8ec236b28b74"
+
+[compat]
+Documenter = "1"
+
+[sources]
+SshDataBridge = {path = ".."}

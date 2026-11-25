@@ -9,6 +9,10 @@ updates:
     schedule:
       interval: weekly
   - package-ecosystem: julia
+    directory: "/docs"
+    schedule:
+      interval: weekly
+  - package-ecosystem: julia
     directory: "/test"
     schedule:
       interval: weekly
