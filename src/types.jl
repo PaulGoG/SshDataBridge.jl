@@ -226,10 +226,11 @@ same directory would overwrite each other's results. Two targets on the same hos
 port must not have overlapping remote directories, equal or one inside the other,
 because a project purge of one would remove the output of the other before it is
 harvested, and both would be deployed into one tree. The rule does not depend on
-`purge_scope`. Hosts are compared as [`node_key`](@ref) describes, IP addresses by value;
-two names of one machine and a symbolic link on the node are not recognized. The rule is
-checked here only: the functions that take a single target act on the target they are
-given.
+`purge_scope`. Hosts are compared as [`node_key`](@ref) describes, IP addresses by value.
+The comparison concerns hosts, not storage: nodes that mount one filesystem, two names or
+addresses of one machine, and a symbolic link or bind mount on the node are not
+recognized. The rule is checked here only: the functions that take a single target act on
+the target they are given.
 """
 struct BridgeConfig
     globals::GlobalOptions

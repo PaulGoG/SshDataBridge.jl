@@ -161,7 +161,7 @@ With `use_gitignore` the `.gitignore` rules of the source tree are applied throu
 
 The same purge runs after a pull when `--clean-remote` is given or `clean_remote_after_pull` is set, but only once the harvest is verified. The transfer is repeated as `rsync --dry-run --itemize-changes`. If that pass still reports an item (a job still writing, for example), nothing is deleted and the target fails, although its data were retrieved. Rerun the pull for that target (`--target <name>`) once the node is idle. The pass is a snapshot: output written after it is deleted unharvested, so purge only nodes whose jobs have finished.
 
-When a purge is requested, the driver checks the purge path of every target before any transfer. The path must be absolute, at least two components deep, free of `..`, and neither `/`, `/root`, `/home`, `/home/<user>`, nor anything under `/usr`, `/etc`, `/var`, and the other system directories. On the node the removal runs as a short POSIX script under `sh -c`. It refuses a symbolic link, whose removal would leave the deployed tree in place, and a directory that contains the account's home directory; a refusal fails the target with exit status 98.
+When a purge is requested, the driver checks the purge path of every target before any transfer. The path must be absolute, at least two components deep, free of `..`, and neither `/`, `/root`, `/home`, `/home/<user>`, nor anything under `/usr`, `/etc`, `/var`, and the other system directories. On the node the removal runs as a short POSIX script under `sh -c`. It refuses a symbolic link, whose removal would leave the deployed tree in place, a path it cannot enter (a file, or a directory without search permission), and a directory that contains the account's home directory; a refusal fails the target with exit status 98 and its reason.
 
 Each action ends with a plain-text summary: one block or line per target with its outcome, exit code, duration, and message, then a tally.
 
@@ -181,7 +181,7 @@ Host keys follow `strict_host_key_checking`: `accept-new` (default) records a ho
 - Password authentication only; ssh keys and agents are not used.
 - `push` never deletes remote files.
 - A purge removes `remote_dir` only. Julia stores the source text of every precompiled package in its cache files, so a private package deployed with this tool stays readable under `~/.julia/compiled/` on the node until that cache is removed as well.
-- The refusal of overlapping remote directories does not recognize a host name and its address, or two names of one machine, as the same node, and it does not see symbolic links on the node.
+- The refusal of overlapping remote directories compares hosts and ports, not the storage behind them. It does not recognize nodes that mount one filesystem (a shared `/home` or scratch space on a cluster), a host name and its address, two names or two addresses of one machine, a symbolic link or bind mount on the node, or targets in two configuration files. When nodes share storage, configure one target for it or give each target its own `remote_dir`: otherwise a purge of one target removes the output of the others before it is harvested.
 - Targets run as cooperative tasks on one thread; the work is bound by the network and by rsync.
 - No retry logic; rerun the action with `--target` for the targets that failed.
 

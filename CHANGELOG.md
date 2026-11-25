@@ -16,6 +16,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 - rsync runs with `-s`, so the remote path no longer passes through the remote shell. With rsync older than 3.2.4 on the workstation, or with `RSYNC_OLD_ARGS` set, a path containing a space or a shell character was split or interpreted there.
 - With `output_subdir = "."`, or one ending in `/.`, and `purge_scope = "output"`, the purge path kept a trailing slash, and the purge emptied the directory behind a symbolic link that it is meant to refuse. `remote_dir` and `output_subdir` are now stored normalized: `.` segments inside the path, repeated slashes, and a trailing slash are removed.
 - `/.` and `/./` passed as `remote_dir` although they name the filesystem root.
+- A purge refused because the path or the home directory could not be entered failed with exit status 98 and no reason; it now states the reason.
 - An exclude or include entry that rsync reads as a rule of its own (`!`, or a leading `+ ` or `- `) is refused; `excludes = [".git", "!"]` used to deploy `.git`.
 - A trailing newline passed the `name`, `host`, and `user` checks; the patterns are anchored at the end of the string.
 - A second `--config` silently replaced the first; it is a usage error, as the README stated.
@@ -25,9 +26,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 
 ### Changed
 
-- **Breaking:** two targets on the same host and port whose remote directories overlap, equal or one inside the other, are refused when the configuration is loaded, whatever the purge scope. A project purge of one would have removed the output of the other before it was harvested. Host names are compared without case, IP addresses by the value the C library reads.
+- **Breaking:** two targets on the same host and port whose remote directories overlap, equal or one inside the other, are refused when the configuration is loaded, whatever the purge scope. A project purge of one would have removed the output of the other before it was harvested. Host names are compared without case, IP addresses by the value the C library reads. Nodes that share a filesystem are not recognized; see the limitations in the README.
 - **Breaking:** a numeric `host` with a field in octal or hexadecimal notation (`192.0.2.012`, `0xc0.0.2.10`) is refused, because the C library reads such a field by another value than it shows, and so is a numeric `host` that the C library does not read as an address (`192.168.1.256`, `2001:db8:10`), which could never connect.
-- **Breaking:** the default `[pull].excludes` no longer contain `core.*`. The pattern also matched result files such as `core.h5`, which a harvest then skipped and a purge destroyed. A configuration that relied on the default to skip core dumps has to list the pattern itself.
+- **Breaking:** the default `[pull].excludes` no longer contain `core.*`. The pattern also matched result files such as `core.h5`, which a harvest then skipped and a purge destroyed. A configuration that relied on the default to skip core dumps has to list the pattern itself. A configuration copied from the earlier template lists `core.*` in `[pull].excludes` explicitly; delete the entry there, or such files stay unharvested and a purge still destroys them.
 - `sandbox/run.jl` is gone. Its command-line scenarios run in the test suite, on the stub binaries the other tests use.
 - `format/format.jl` no longer parses every source file before formatting, and `format/activate.jl` no longer deletes a manifest resolved by another Julia version.
 - The workflows pin their actions by commit. The test run on the stable release records coverage and uploads it to Codecov.
