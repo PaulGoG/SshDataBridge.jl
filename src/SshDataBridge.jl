@@ -1,6 +1,7 @@
 module SshDataBridge
 
 using Logging: ConsoleLogger, with_logger
+using Sockets: IPAddr, IPv4, IPv6
 using TOML: TOML
 
 include("validation.jl")

@@ -70,7 +70,7 @@ purge_scope = "project"  # one of: "project" | "output"
 # Unique label (mandatory); names the local harvest directory and the rsync logs
 name = "Cluster-Node-01"  # starts with a letter or digit; letters, digits, '.', '_', '-'; at most 64 characters
 
-# Hostname, IPv4 address, or IPv6 literal without brackets
+# Hostname, IPv4 address in decimal fields, or IPv6 literal without brackets
 host = "192.168.1.100"
 
 # SSH daemon port
@@ -80,7 +80,7 @@ port = 22  # integer in [1, 65535]
 user = "scientist"  # letter or underscore, then letters, digits, '.', '_', '-'; at most 32 characters
 
 # Authentication password
-password = "example_password_1"
+password = "example_password_1"  # non-empty; no control characters
 
 # Base directory of the campaign on the node; no other target on the same host and port may use it or a directory inside it
 remote_dir = "/home/scientist/campaigns/sim_batch_01"  # absolute path without '..' segments or '*', '?', '[', ']'

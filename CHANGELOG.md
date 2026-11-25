@@ -20,12 +20,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 - A trailing newline passed the `name`, `host`, and `user` checks; the patterns are anchored at the end of the string.
 - A second `--config` silently replaced the first; it is a usage error, as the README stated.
 - A configuration file its owner cannot read made the driver throw instead of exiting with status 1.
-- Configuration and precondition errors were printed as `Error: ArgumentError: ...`; the exception type is gone.
+- Configuration and precondition errors were printed as `Error: ArgumentError: ...`; the exception type is gone, and an unreadable configuration file is reported by its reason (`Permission denied`) alone.
 - The README listed only `name` among the mandatory target keys; `host`, `user`, `password`, and `remote_dir` are mandatory as well. `bandwidth_limit` is in KiB/s, the unit of rsync's `--bwlimit`, not KB/s.
 
 ### Changed
 
-- **Breaking:** two targets on the same host and port whose remote directories overlap, equal or one inside the other, are refused when the configuration is loaded. The purge of one would have removed the output of the other before it was harvested.
+- **Breaking:** two targets on the same host and port whose remote directories overlap, equal or one inside the other, are refused when the configuration is loaded, whatever the purge scope. A project purge of one would have removed the output of the other before it was harvested. Host names are compared without case and IP addresses by value.
+- **Breaking:** a `host` with an address field in octal or hexadecimal notation (`192.0.2.012`, `0xc0.0.2.10`) is refused. The C library reads such a field by another value than it shows.
 - **Breaking:** the default `[pull].excludes` no longer contain `core.*`. The pattern also matched result files such as `core.h5`, which a harvest then skipped and a purge destroyed. A configuration that relied on the default to skip core dumps has to list the pattern itself.
 - `sandbox/run.jl` is gone. Its command-line scenarios run in the test suite, on the stub binaries the other tests use.
 - `format/format.jl` no longer parses every source file before formatting, and `format/activate.jl` no longer deletes a manifest resolved by another Julia version.

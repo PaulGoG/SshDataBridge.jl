@@ -2,11 +2,11 @@
 
 [![CI](https://github.com/PaulGoG/SshDataBridge.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/PaulGoG/SshDataBridge.jl/actions/workflows/CI.yml?query=branch%3Amain)
 [![Aqua QA](https://juliatesting.github.io/Aqua.jl/dev/assets/badge.svg)](https://github.com/JuliaTesting/Aqua.jl)
-[![JET](https://img.shields.io/badge/tested%20with-JET.jl-233f9a)](https://github.com/aviatesk/JET.jl)
+[![JET](https://img.shields.io/badge/%F0%9F%9B%A9%EF%B8%8F_tested_with-JET.jl-233f9a)](https://github.com/aviatesk/JET.jl)
 [![Code Style: YAS](https://img.shields.io/badge/code%20style-yas-violet.svg)](https://github.com/jrevels/YASGuide)
 [![Format](https://github.com/PaulGoG/SshDataBridge.jl/actions/workflows/Format.yml/badge.svg?branch=main)](https://github.com/PaulGoG/SshDataBridge.jl/actions/workflows/Format.yml?query=branch%3Amain)
-[![Julia](https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2FPaulGoG%2FSshDataBridge.jl%2Fmain%2FProject.toml&query=%24.compat.julia&label=julia&color=9558b2)](https://julialang.org/downloads/)
-[![Platform](https://img.shields.io/badge/platform-Linux-lightgrey)](#environment-setup)
+[![Julia](https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2FPaulGoG%2FSshDataBridge.jl%2Fmain%2FProject.toml&query=%24.compat.julia&label=julia&logo=julia&color=9558b2)](https://julialang.org/downloads/)
+[![Platform](https://img.shields.io/badge/platform-Linux-lightgrey?logo=linux)](#environment-setup)
 
 Deploys a simulation code base to several remote compute nodes with rsync over ssh and later harvests their results, on all nodes in parallel. One TOML file describes the nodes and the paths.
 
@@ -107,7 +107,7 @@ Every action runs on all selected targets concurrently, and a failure on one nod
 
 ## Configuration
 
-`config.toml` holds passwords in plain text: git ignores every `.toml` file in the clone except the tracked ones, and the loader refuses a file that grants any permission to group or others. Unknown keys and values of the wrong type are rejected before any node is contacted, and the message names the key. Relative local paths are resolved against the directory of the configuration file, and a leading `~` expands to the home directory. `remote_dir` and `output_subdir` must not contain `..` segments or the characters `*`, `?`, `[`, `]`, which rsync would expand on the node. Two targets on the same host and port must not share a `remote_dir` or nest one inside the other, because the purge of one would remove the output of the other before it is harvested. `[push].local_source_dir`, `[pull].local_destination_root`, and the target keys `name`, `host`, `user`, `password`, and `remote_dir` are mandatory; every other key has a default.
+`config.toml` holds passwords in plain text: git ignores every `.toml` file in the clone except the tracked ones, and the loader refuses a file that grants any permission to group or others. Unknown keys and values of the wrong type are rejected before any node is contacted, and the message names the key. Relative local paths are resolved against the directory of the configuration file, and a leading `~` expands to the home directory. `remote_dir` and `output_subdir` must not contain `..` segments or the characters `*`, `?`, `[`, `]`, which rsync would expand on the node. Two targets on the same host and port must not share a `remote_dir` or nest one inside the other, whatever the `purge_scope`: a project purge of one would remove the output of the other before it is harvested, and both would be deployed into one tree. Host names are compared without case and IP addresses by value. A `host` with an address field in octal or hexadecimal notation (`192.0.2.012`, `0xc0.0.2.10`) is refused. `[push].local_source_dir`, `[pull].local_destination_root`, and the target keys `name`, `host`, `user`, `password`, and `remote_dir` are mandatory; every other key has a default.
 
 ```toml
 [globals]
@@ -136,7 +136,7 @@ purge_scope = "project"               # one of: "project" | "output"
 
 [[targets]]
 name = "Cluster-Node-01"              # mandatory, unique; starts with a letter or digit, then letters, digits, '.', '_', '-'; names the local harvest directory
-host = "192.168.1.100"                # hostname, IPv4 address, or IPv6 literal without brackets
+host = "192.168.1.100"                # hostname, IPv4 address in decimal fields, or IPv6 literal without brackets
 port = 22                             # integer in [1, 65535]
 user = "scientist"
 password = "example_password_1"
@@ -181,7 +181,7 @@ Host keys follow `strict_host_key_checking`: `accept-new` (default) records a ho
 - Password authentication only; ssh keys and agents are not used.
 - `push` never deletes remote files.
 - A purge removes `remote_dir` only. Julia stores the source text of every precompiled package in its cache files, so a private package deployed with this tool stays readable under `~/.julia/compiled/` on the node until that cache is removed as well.
-- Two targets count as one node only when their `host` and `port` are written alike. An alias and an address of the same machine are not recognized, so the refusal of overlapping remote directories does not cover them.
+- The refusal of overlapping remote directories does not recognize a host name and its address, or two names of one machine, as the same node, and it does not see symbolic links on the node.
 - Targets run as cooperative tasks on one thread; the work is bound by the network and by rsync.
 - No retry logic; rerun the action with `--target` for the targets that failed.
 

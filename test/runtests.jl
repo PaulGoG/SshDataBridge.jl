@@ -283,6 +283,15 @@ const DRIVER_SCENARIOS = [(; arguments=["probe"], stub_exit=0, expected=0,
             @test BridgeTarget("N", host, 22, "u", "p", "/d/e").host == host
         end
 
+        # An address field in octal or hexadecimal notation has another value than it
+        # shows: the C library reads 192.0.2.012 and 0xc0.0.2.10 as 192.0.2.10.
+        for host in ("192.0.2.012", "0xc0.0.2.10", "0300.0.2.10", "010")
+            @test_throws ArgumentError BridgeTarget("N", host, 22, "u", "p", "/d/e")
+        end
+        for host in ("0xcafe.example.org", "007.example.org", "192.0.2.10", "10")
+            @test BridgeTarget("N", host, 22, "u", "p", "/d/e").host == host
+        end
+
         function valid_target(; name="N1", host="192.168.1.50", port=22, user="admin",
                               password="pass", remote_dir="/dir/sub", output_subdir="out",
                               policy=nothing)
@@ -547,8 +556,12 @@ const DRIVER_SCENARIOS = [(; arguments=["probe"], stub_exit=0, expected=0,
                 @test_skip "unreadable configuration file"
             else
                 @test_throws ArgumentError load_config(path)
+                err = IOBuffer()
                 @test SshDataBridge.main(["probe", "--config", path]; io=IOBuffer(),
-                                         err=IOBuffer()) == 1
+                                         err=err) == 1
+                message = String(take!(err))
+                @test occursin("cannot be read: Permission denied.", message)
+                @test !occursin("SystemError", message)
             end
         end
         @test_throws ArgumentError load_config(joinpath(@__DIR__, "does-not-exist.toml"))
@@ -651,6 +664,33 @@ const DRIVER_SCENARIOS = [(; arguments=["probe"], stub_exit=0, expected=0,
         # Another host
         @test paired(node("A", "10.0.0.1", 22, "/a/b"),
                      node("B", "10.0.0.2", 22, "/a/b")) isa BridgeConfig
+        # One address in two spellings is one node. The IPv6 pairs are equal by RFC 5952;
+        # the C library reads the mapped and the shortened IPv4 forms as 192.0.2.10
+        # (`getent ahosts`).
+        for (first_host, second_host) in (("2001:db8::10", "2001:db8:0:0:0:0:0:10"),
+                                          ("2001:DB8::10", "2001:0db8::0010"),
+                                          ("::ffff:192.0.2.10", "192.0.2.10"),
+                                          ("::ffff:c000:20a", "192.0.2.10"),
+                                          ("192.0.522", "192.0.2.10"),
+                                          ("3221225994", "192.0.2.10"))
+            @test_throws ArgumentError paired(node("A", first_host, 22, "/a/b"),
+                                              node("B", second_host, 22, "/a/b"))
+        end
+        # Different addresses and different names stay different nodes
+        for (first_host, second_host) in (("2001:db8::10", "2001:db8::11"),
+                                          ("192.0.2.10", "192.0.2.11"),
+                                          ("::ffff:192.0.2.10", "192.0.2.11"),
+                                          ("node10", "node11"))
+            @test paired(node("A", first_host, 22, "/a/b"),
+                         node("B", second_host, 22, "/a/b")) isa BridgeConfig
+        end
+        # The rule holds for either purge scope
+        scoped = PullOptions("/y", "output", String[], String[], :resume, false, :output)
+        @test_throws ArgumentError BridgeConfig(GlobalOptions(), PushOptions("/x"), scoped,
+                                                [BridgeTarget("A", "10.0.0.1", 22, "u", "p",
+                                                              "/a/b", "first"),
+                                                 BridgeTarget("B", "10.0.0.1", 22, "u", "p",
+                                                              "/a/b", "second")])
         # The parser refuses the same overlap
         overlapping = Any[merge(minimal_target(), Dict("name" => "One")),
                           merge(minimal_target(), Dict("name" => "Two"))]
@@ -663,6 +703,9 @@ const DRIVER_SCENARIOS = [(; arguments=["probe"], stub_exit=0, expected=0,
         # leave
         @test parse_config(minimal_config()).pull.excludes == ["*.tmp", "*~"]
         @test PullOptions("/y").excludes == ["*.tmp", "*~"]
+        # The default output directory is stored in the spelling the targets use
+        @test PullOptions("/y", "out/.").output_subdir == "out"
+        @test PullOptions("/y", "./").output_subdir == "."
         # The tracked template agrees with the default excludes
         parsed = SshDataBridge.TOML.parsefile(joinpath(dirname(@__DIR__),
                                                        "config.example.toml"))

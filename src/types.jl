@@ -207,7 +207,7 @@ struct PullOptions
             throw(ArgumentError("Pull parameter 'clean_remote_after_pull' cannot be combined with 'includes': a purge after a harvest narrowed by include patterns would destroy the files the filter left behind."))
         end
         return new(String(local_destination_root),
-                   String(rstrip(output_subdir, '/')),
+                   String(rstrip(normpath(output_subdir), '/')),
                    String[String(i) for i in includes],
                    String[String(e) for e in excludes],
                    collision_strategy,
@@ -224,9 +224,12 @@ non-empty list of targets. Target names must be unique, because each one names t
 local harvest directory of its target and two targets harvested concurrently into the
 same directory would overwrite each other's results. Two targets on the same host and
 port must not have overlapping remote directories, equal or one inside the other,
-because the purge of one would remove the output of the other before it is harvested.
-That comparison is lexical: it does not recognize two names of one machine, nor a
-symbolic link on the node.
+because a project purge of one would remove the output of the other before it is
+harvested, and both would be deployed into one tree. The rule does not depend on
+`purge_scope`. Hosts are compared as [`node_key`](@ref) describes, IP addresses by value;
+two names of one machine and a symbolic link on the node are not recognized. The rule is
+checked here only: the functions that take a single target act on the target they are
+given.
 """
 struct BridgeConfig
     globals::GlobalOptions

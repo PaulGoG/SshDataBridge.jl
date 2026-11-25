@@ -44,4 +44,4 @@ clean_all_remote_targets(config; dry_run=true)
 SshDataBridge.main(["probe", "--config", "config.toml"])
 ```
 
-The library functions do not ask for confirmation. [`clean_remote_target`](@ref) purges when called, and [`pull_target`](@ref) purges after a verified harvest when `clean_remote_after_pull` is set. The `--yes` gate belongs to the command line.
+The library functions do not ask for confirmation. [`clean_remote_target`](@ref) purges when called, and [`pull_target`](@ref) purges after a verified harvest when `clean_remote_after_pull` is set. The `--yes` gate belongs to the command line. The rule against overlapping targets is checked when a [`BridgeConfig`](@ref) is built; the functions that take a single target act on the target they are given.

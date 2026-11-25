@@ -34,6 +34,12 @@ const TARGET_NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\z"
 const CONTROL_CHARACTER_PATTERN = r"[\x00-\x1f\x7f]"
 const MAX_HOSTNAME_LENGTH = 253
 
+# A host whose labels are all numbers is an address to the C library, which reads a field
+# with a leading zero as octal and one with a leading 0x as hexadecimal. Both forms are
+# refused, so that a numeric host has the value it shows.
+const NUMERIC_HOST_PATTERN = r"^(?:0[xX][0-9A-Fa-f]*|[0-9]+)(?:\.(?:0[xX][0-9A-Fa-f]*|[0-9]+))*\z"
+const NON_DECIMAL_FIELD_PATTERN = r"(?:^|\.)0[0-9xX]"
+
 # rsync expands these characters in a remote path on the node, with or without
 # --secluded-args, whereas the ssh commands of this package quote every path literally.
 const RSYNC_WILDCARD_PATTERN = r"[*?\[\]]"
@@ -52,6 +58,17 @@ Whether `host` is a syntactically valid DNS hostname, IPv4 address, or IPv6 lite
 function is_valid_host(host::AbstractString)::Bool
     return length(host) <= MAX_HOSTNAME_LENGTH &&
            (occursin(HOSTNAME_PATTERN, host) || occursin(IPV6_PATTERN, host))
+end
+
+"""
+    has_non_decimal_address_field(host::AbstractString)::Bool
+
+Whether `host` is a numeric address with a field in octal or hexadecimal notation
+(`192.0.2.012`, `0xc0.0.2.10`), which the C library accepts and reads by another value
+than the decimal one.
+"""
+function has_non_decimal_address_field(host::AbstractString)::Bool
+    return occursin(NUMERIC_HOST_PATTERN, host) && occursin(NON_DECIMAL_FIELD_PATTERN, host)
 end
 
 """
@@ -89,14 +106,39 @@ function paths_overlap(a::AbstractString, b::AbstractString)::Bool
 end
 
 """
+    parsed_address(host::AbstractString)::Union{IPv4, IPv6, Nothing}
+
+`host` as an IP address when it is a literal that the standard library parses, and
+`nothing` when it is a host name. An IPv4 address mapped into IPv6 (`::ffff:a.b.c.d`) is
+returned as that IPv4 address.
+"""
+function parsed_address(host::AbstractString)::Union{IPv4, IPv6, Nothing}
+    (occursin(':', host) || occursin(NUMERIC_HOST_PATTERN, host)) || return nothing
+    address = try
+        parse(IPAddr, host)
+    catch err
+        err isa Union{ArgumentError, OverflowError} || rethrow()
+        return nothing
+    end
+    if address isa IPv6 && (address.host >> 32) == 0xffff
+        return IPv4(UInt32(address.host & 0xffffffff))
+    end
+    return address
+end
+
+"""
     node_key(host::AbstractString, port::Integer)::Tuple{String, Int}
 
-Identity of an ssh endpoint when targets are compared: the host in lower case without a
-trailing dot, and the port. Two names of one machine, an alias and its address for
-example, are not recognized as the same node.
+Identity of an ssh endpoint when targets are compared: the host and the port. A host
+name is taken in lower case without a trailing dot. An IP address is taken by value, so
+that its spellings give one key: IPv6 groups written in full or compressed, in either
+letter case, an IPv4 address mapped into IPv6, a shortened IPv4 form. A name and its
+address, or two names of one machine, are not recognized as the same node.
 """
 function node_key(host::AbstractString, port::Integer)::Tuple{String, Int}
-    return (lowercase(String(rstrip(host, '.'))), Int(port))
+    name = lowercase(String(rstrip(host, '.')))
+    address = parsed_address(name)
+    return (address === nothing ? name : string(address), Int(port))
 end
 
 """
@@ -206,6 +248,9 @@ function validate_bridge_target_fields(name::AbstractString,
         throw(ArgumentError("Target 'name' must start with a letter or digit and contain only letters, digits, '.', '_', or '-' (at most 64 characters) because it names the local harvest directory (received: '$(name)')."))
     end
     context = "target '$(name)'"
+    if has_non_decimal_address_field(host)
+        throw(ArgumentError("Target 'host' is a numeric address with a field in octal or hexadecimal notation; write every field in decimal (received: '$(host)'; $(context))."))
+    end
     if !is_valid_host(host)
         throw(ArgumentError("Target 'host' must be a DNS hostname, an IPv4 address, or an IPv6 literal (received: '$(host)'; $(context))."))
     end

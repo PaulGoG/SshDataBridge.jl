@@ -204,7 +204,7 @@ function load_config(path::AbstractString)::BridgeConfig
         TOML.tryparsefile(path)
     catch err
         err isa SystemError || rethrow()
-        throw(ArgumentError("Configuration file '$(path)' cannot be read: $(sprint(showerror, err))"))
+        throw(ArgumentError("Configuration file '$(path)' cannot be read: $(Libc.strerror(err.errnum))."))
     end
     if parsed isa TOML.ParserError
         throw(ArgumentError("Configuration file '$(path)' is not valid TOML: $(parsed.type) near line $(syntax_error_line(parsed)). The line is not printed because it may hold a password."))
