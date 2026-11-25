@@ -590,14 +590,22 @@ const DRIVER_SCENARIOS = [(; arguments=["probe"], stub_exit=0, expected=0,
                 false
             end
             searchable && @test_skip "configuration file in an unsearchable directory"
-            paths = searchable ? [loop] : [loop, inside]
-            for path in paths
-                @test_throws ArgumentError load_config(path)
+            cases = searchable ? [(loop, Libc.ELOOP)] :
+                    [(loop, Libc.ELOOP), (inside, Libc.EACCES)]
+            for (path, errno) in cases
+                causes = try
+                    load_config(path)
+                    0
+                catch err
+                    @test err isa ArgumentError
+                    length(current_exceptions())
+                end
+                @test causes == 1
                 err = IOBuffer()
                 @test SshDataBridge.main(["probe", "--config", path]; io=IOBuffer(),
                                          err=err) == 1
                 message = String(take!(err))
-                @test occursin("cannot be read: ", message)
+                @test occursin("cannot be read: $(Libc.strerror(errno)).", message)
                 @test !occursin("IOError", message)
             end
             chmod(locked, 0o700)
@@ -1185,6 +1193,27 @@ const DRIVER_SCENARIOS = [(; arguments=["probe"], stub_exit=0, expected=0,
             @test run_purge(joinpath(dir, "absent")).exitcode == 0
             @test run_purge(victim).exitcode == 0
             @test !isdir(victim)
+            # A path it cannot enter is refused with its reason: a file, and a directory
+            # without search permission (skipped for root, which enters any directory)
+            plain = joinpath(dir, "plain")
+            write(plain, "x")
+            not_entered = run_purge(plain)
+            @test not_entered.exitcode == 98
+            @test occursin("cannot be entered", not_entered.stderr)
+            @test isfile(plain)
+            closed = mkpath(joinpath(dir, "closed"))
+            write(joinpath(closed, "f"), "x")
+            chmod(closed, 0o000)
+            enterable = success(`sh -c "cd -- $(closed)"`)
+            if enterable
+                @test_skip "purge of a directory without search permission"
+            else
+                not_entered = run_purge(closed)
+                @test not_entered.exitcode == 98
+                @test occursin("cannot be entered", not_entered.stderr)
+            end
+            chmod(closed, 0o700)
+            @test isfile(joinpath(closed, "f"))
         end
     end
 

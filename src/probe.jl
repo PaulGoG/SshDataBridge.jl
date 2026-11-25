@@ -186,18 +186,21 @@ end
     purge_script(path::AbstractString)::String
 
 One-line POSIX shell script that removes `path` recursively on the node. It exits 0 when
-the path does not exist. It exits 98, deleting nothing, in two cases: the path is a
-symbolic link, whose removal would leave the deployed tree in place, or it is a directory
-that contains the home directory of the account, which the lexical rules of
-[`validate_remote_path_safety`](@ref) cannot see. `path` is POSIX-quoted, without a
-trailing slash, so that the link test sees a link and not the directory behind it.
+the path does not exist. It exits 98, deleting nothing, when the path is a symbolic link,
+whose removal would leave the deployed tree in place; when the path or the home directory
+of the account cannot be entered (a file, or a directory without search permission), so
+that their physical locations cannot be compared; and when the path is a directory that
+contains the home directory, which the lexical rules of
+[`validate_remote_path_safety`](@ref) cannot see. Each refusal states its reason on
+standard error. `path` is POSIX-quoted, without a trailing slash, so that the link test
+sees a link and not the directory behind it.
 """
 function purge_script(path::AbstractString)::String
     quoted = Base.shell_escape_posixly(rstrip(path, '/'))
     return join(["p=$(quoted)",
                  "if [ -L \"\$p\" ]; then echo \"purge refused: \$p is a symbolic link\" >&2; exit 98; fi",
                  "[ -e \"\$p\" ] || exit 0",
-                 "r=\$(cd -- \"\$p\" && pwd -P) && h=\$(cd && pwd -P) || exit 98",
+                 "r=\$(cd -- \"\$p\" && pwd -P) && h=\$(cd && pwd -P) || { echo \"purge refused: \$p or the home directory cannot be entered\" >&2; exit 98; }",
                  "case \"\$h/\" in \"\$r\"/*) echo \"purge refused: \$p contains the home directory\" >&2; exit 98;; esac",
                  "rm -rf -- \"\$p\""], "; ")
 end
