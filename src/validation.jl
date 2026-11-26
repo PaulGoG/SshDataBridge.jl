@@ -36,8 +36,9 @@ const MAX_HOSTNAME_LENGTH = 253
 
 # A host whose labels are all numbers is an address to the C library, which reads a field
 # with a leading zero as octal and one with a leading 0x as hexadecimal. Both forms are
-# refused, so that a numeric host has the value it shows.
-const NUMERIC_HOST_PATTERN = r"^(?:0[xX][0-9A-Fa-f]*|[0-9]+)(?:\.(?:0[xX][0-9A-Fa-f]*|[0-9]+))*\z"
+# refused, so that a numeric host has the value it shows. A trailing dot leaves such a host
+# numeric: it is no DNS name, and the C library reads no address from it either.
+const NUMERIC_HOST_PATTERN = r"^(?:0[xX][0-9A-Fa-f]*|[0-9]+)(?:\.(?:0[xX][0-9A-Fa-f]*|[0-9]+))*\.?\z"
 const NON_DECIMAL_FIELD_PATTERN = r"(?:^|\.)0[0-9xX]"
 
 # rsync expands these characters in a remote path on the node, with or without
@@ -108,8 +109,9 @@ end
 """
     is_numeric_host(host::AbstractString)::Bool
 
-Whether `host` can only be an IP address: it contains a `:`, or every label is a number.
-An all-numeric name is not a DNS name (RFC 3696, section 2).
+Whether `host` can only be an IP address: it contains a `:`, or every label is a number,
+with or without a trailing dot. An all-numeric name is not a DNS name (RFC 3696, section
+2).
 """
 function is_numeric_host(host::AbstractString)::Bool
     return occursin(':', host) || occursin(NUMERIC_HOST_PATTERN, host)

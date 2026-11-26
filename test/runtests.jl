@@ -296,6 +296,21 @@ const DRIVER_SCENARIOS = [(; arguments=["probe"], stub_exit=0, expected=0,
         for host in ("0xcafe.example.org", "007.example.org", "192.0.2.10", "10")
             @test BridgeTarget("N", host, 22, "u", "p", "/d/e").host == host
         end
+        # A trailing dot does not turn a numeric host into a name; the C library reads no
+        # address from any of these.
+        for (host, reason) in (("192.0.2.012.", "octal or hexadecimal"),
+                               ("0xc0.0.2.10.", "octal or hexadecimal"),
+                               ("192.168.1.256.", "not an IP address"),
+                               ("192.0.2.10.", "not an IP address"))
+            refusal = try
+                BridgeTarget("N", host, 22, "u", "p", "/d/e")
+                nothing
+            catch error
+                error
+            end
+            @test refusal isa ArgumentError
+            @test occursin(reason, sprint(showerror, refusal))
+        end
 
         function valid_target(; name="N1", host="192.168.1.50", port=22, user="admin",
                               password="pass", remote_dir="/dir/sub", output_subdir="out",
