@@ -183,7 +183,9 @@ Transport parameters shared by all targets.
 
 ssh abandons a connection after `server_alive_interval * (server_alive_count_max + 1)`
 seconds without an answer from the server, 60 s with the defaults, so the transfer or
-remote command fails instead of blocking.
+remote command fails instead of blocking. A session that runs through an existing master
+connection (`ControlMaster`) is kept alive by the master, whose own options govern; these
+two fields do not reach it.
 """
 struct GlobalOptions
     connect_timeout::Int
