@@ -348,7 +348,8 @@ function push_target(target::BridgeTarget, config::BridgeConfig;
 
     claim = claim_remote_directory(target, config.globals)
     if !claim.success
-        message = claim.exitcode == 97 ? "Push refused: $(strip(claim.stderr))" :
+        # The claim script states its refusal as "push refused: <reason>".
+        message = claim.exitcode == 97 ? uppercasefirst(String(strip(claim.stderr))) :
                   "Remote directory claim failed (exit code $(claim.exitcode)): $(strip(claim.stderr))"
         return TransferResult(target, :push, false, claim.exitcode, time() - t_start,
                               message)
