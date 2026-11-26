@@ -70,16 +70,19 @@ purge_scope = "project"  # one of: "project" | "output"
 # Unique label (mandatory); names the local harvest directory and the rsync logs
 name = "Cluster-Node-01"  # starts with a letter or digit; letters, digits, '.', '_', '-'; at most 64 characters
 
-# Hostname, IPv4 address in decimal fields, or IPv6 literal without brackets
+# Hostname, ssh_config Host alias, IPv4 address in decimal fields, or IPv6 literal without brackets
 host = "192.168.1.100"
 
-# SSH daemon port
+# SSH daemon port (optional; when absent, ~/.ssh/config or 22)
 port = 22  # integer in [1, 65535]
 
-# Remote user name
+# Remote user name (optional; when absent, ~/.ssh/config or the local account name)
 user = "scientist"  # letter or underscore, then letters, digits, '.', '_', '-'; at most 32 characters
 
-# Authentication password
+# Authentication method (optional; default "password")
+auth = "password"  # one of: "password" | "key"
+
+# Authentication password (password targets only)
 password = "example_password_1"  # non-empty; no control characters
 
 # Base directory of the campaign on the node; no other target on the same host and port may use it or a directory inside it
@@ -99,3 +102,18 @@ user = "engineer"
 password = "example_password_2"
 remote_dir = "/home/engineer/campaigns/sim_batch_01"
 output_subdir = "results"
+
+[[targets]]
+name = "Cluster"
+host = "hpc"
+auth = "key"
+
+# Private key offered alone (optional, key targets only; absolute or starting with '~';
+# a regular file of mode 600 without a single quote in its path, checked when the
+# configuration is loaded)
+# identity_file = "~/.ssh/id_ed25519_hpc"
+
+# Jump hosts passed as ssh -J (optional, key targets only)
+proxy_jump = "admin@gateway.example.org"  # [user@]host[:port] hops separated by ','; IPv6 in brackets; or "none"
+
+remote_dir = "/scratch/scientist/campaigns/sim_batch_01"

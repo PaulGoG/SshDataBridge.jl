@@ -4,6 +4,20 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 
 ## [Unreleased]
 
+### Added
+
+- Key-based targets: `auth = "key"` lets `ssh` authenticate by itself (agent, identity file, certificate, master connection) and never prompts. Its commands run with `BatchMode=yes`, and with `SSH_ASKPASS=false` and `SSH_ASKPASS_REQUIRE=force`, which reach the ssh of a jump host where `BatchMode` does not; a host that asks for a second factor needs a master connection opened beforehand. `auth = "password"` is the default and behaves as before. `sshpass` is required only with a password target.
+- `host` may be a Host alias of `~/.ssh/config`; host names may contain `_`.
+- `identity_file` and `proxy_jump` for key targets, passed as `-i <path> -o IdentitiesOnly=yes` and `-J`. The identity file must be an absolute regular file without group or other permissions and without a single quote; a jump specification is checked hop by hop, and `none` disables a `ProxyJump` of `~/.ssh/config`. Both are refused on password targets, where `sshpass` would answer a jump host's password prompt with the target's password.
+- Before any action the driver evaluates every target with `ssh -G` and repeats the overlap rule on the host name and port that ssh will use, before `--target` narrows the run: an alias and the name it stands for no longer pass as two nodes. A password target that `~/.ssh/config` routes through a jump host is warned about. The purge pre-check uses the evaluated user.
+- Ownership marker: a push claims `remote_dir` by writing `.sshdatabridge-target` with the target name, atomically by a hard link, and is refused when the marker names another target. A purge is refused when the marker of another target lies at the purge path, in an ancestor of its physical location, or below it. Nodes that share storage, which the overlap rule cannot see, are caught that way. A purge that finds no marker of its target proceeds and says so. The marker is excluded from harvest and verification.
+
+### Changed
+
+- **Breaking:** `port` and `user` are optional, and an absent `port` is no longer passed as `-p 22`: `~/.ssh/config` decides, as for every key left out. A configuration without `port` whose host matches a `Host` block with a `Port` now connects to that port.
+- **Breaking:** a push that finds `remote_dir` claimed by another target fails with exit status 97, and the step before the transfer is reported as `Remote directory claim failed` instead of `Remote directory creation failed`.
+- **Breaking** for library use: `BridgeTarget` has the fields `auth`, `identity_file`, and `proxy_jump`, and `port`, `user`, and `password` may be `nothing`. The keyword constructor `BridgeTarget(name, host; remote_dir, ...)` takes every field; the positional constructor still builds a password target. The filter rules of a pull begin with `--exclude=/.sshdatabridge-target`.
+
 ## [0.6.0] - 2026-11-26
 
 ### Added
