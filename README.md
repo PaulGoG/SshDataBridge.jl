@@ -241,7 +241,7 @@ SshDataBridge.jl/
 │   ├── types.jl             # Configuration, result, and exception types
 │   ├── process.jl           # Credential delivery and process execution
 │   ├── config.jl            # Typed TOML parser
-│   ├── probe.jl             # ssh commands: probe, mkdir, purge
+│   ├── probe.jl             # ssh commands: probe, claim, purge; ssh -G evaluation
 │   ├── transfer.jl          # rsync commands: push, pull; clean-tree check
 │   └── cli.jl               # Command-line driver: probe | push | pull | clean
 └── test/
