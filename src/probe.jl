@@ -354,12 +354,15 @@ const OWNERSHIP_MARKER = ".sshdatabridge-target"
 One-line POSIX shell script, run under `sh -c`, that creates `remote_dir` with
 `mkdir -p` and claims it for the target `name` through the ownership marker
 `remote_dir/.sshdatabridge-target`, which holds the name of the target. An absent marker
-is written to a temporary file and hard-linked into place; the link is atomic and fails
-when the marker exists, so that of two concurrent claims exactly one marker is written
-and both read it. The script exits 0 when the marker names `name`, 1 when the directory
-or the marker cannot be created or read, and 97 when the marker names another target:
-the nodes share storage, or two targets name one directory. The refusal states its
-reason on standard error. `remote_dir` and `name` are POSIX-quoted.
+is written to a temporary file named after the node and the shell's process ID, then
+hard-linked into place; the link is atomic and fails when the marker exists, also over
+NFS, where `O_EXCL` is not reliable on every server (open(2)). Of two concurrent claims
+exactly one marker is written, and both read it back rather than trust the status of
+`ln`, which NFS can report as failed after a lost reply. The script exits 0 when the
+marker names `name`, 1 when the directory or the marker cannot be created or read, and 97
+when the marker names another target: the nodes share storage, or two targets name one
+directory. The refusal states its reason on standard error. `remote_dir` and `name` are
+POSIX-quoted.
 """
 function claim_script(remote_dir::AbstractString, name::AbstractString)::String
     directory = Base.shell_escape_posixly(remote_dir)
@@ -368,7 +371,7 @@ function claim_script(remote_dir::AbstractString, name::AbstractString)::String
                  "n=$(owner)",
                  "m=\"\$d/$(OWNERSHIP_MARKER)\"",
                  "mkdir -p -- \"\$d\" || exit 1",
-                 "if [ ! -f \"\$m\" ]; then t=\"\$m.\$\$\"; printf '%s\\n' \"\$n\" > \"\$t\" || exit 1; ln -- \"\$t\" \"\$m\" 2>/dev/null; rm -f -- \"\$t\"; fi",
+                 "if [ ! -f \"\$m\" ]; then t=\"\$m.\$(uname -n).\$\$\"; printf '%s\\n' \"\$n\" > \"\$t\" || exit 1; ln -- \"\$t\" \"\$m\" 2>/dev/null; rm -f -- \"\$t\"; fi",
                  "o=\$(cat -- \"\$m\") || exit 1",
                  "[ \"\$o\" = \"\$n\" ] && exit 0",
                  "echo \"push refused: \$d is in use by target '\$o': the nodes share storage, or two targets name one directory\" >&2",
