@@ -4,6 +4,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-26
+
 ### Added
 
 - A documentation site with the configuration reference and the library API, built with Documenter from `docs/` and deployed by CI.
@@ -119,7 +121,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 - Optional clean-git-tree requirement for deployments, evaluated in the configured source directory.
 - Test suite with static analysis (Aqua, JET, ExplicitImports) and a stub-binary harness that exercises the process execution paths without network access; formatting enforced by a dedicated `format/` environment and CI job.
 
-[Unreleased]: https://github.com/PaulGoG/SshDataBridge.jl/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/PaulGoG/SshDataBridge.jl/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/PaulGoG/SshDataBridge.jl/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/PaulGoG/SshDataBridge.jl/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/PaulGoG/SshDataBridge.jl/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/PaulGoG/SshDataBridge.jl/compare/v0.2.0...v0.3.0
