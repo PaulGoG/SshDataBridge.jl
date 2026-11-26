@@ -108,12 +108,11 @@ name = "Cluster"
 host = "hpc"
 auth = "key"
 
-# Private key offered alone (optional, key targets only; absolute or starting with '~';
-# a regular file of mode 600 without a single quote in its path, checked when the
-# configuration is loaded)
+# Key file passed as ssh -i with IdentitiesOnly (optional, key targets only)
+# absolute or starting with '~/'; no ', % or $; no group or other permission bits unless it ends in .pub
 # identity_file = "~/.ssh/id_ed25519_hpc"
 
 # Jump hosts passed as ssh -J (optional, key targets only)
-proxy_jump = "admin@gateway.example.org"  # [user@]host[:port] hops separated by ','; IPv6 in brackets; or "none"
+proxy_jump = "admin@gateway.example.org"  # [user@]host[:port] hops separated by ','; IPv6 in brackets in the last hop only; "none" (any target) = direct
 
 remote_dir = "/scratch/scientist/campaigns/sim_batch_01"

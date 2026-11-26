@@ -10,7 +10,7 @@ The [README](https://github.com/PaulGoG/SshDataBridge.jl#readme) covers the comm
 
 ## Requirements
 
-Linux workstation with the OpenSSH client, `sshpass`, and `rsync`. Every remote node needs `rsync` as well, version 3.0 or newer on both sides. Julia 1.10 or later.
+Linux workstation with the OpenSSH client (8.4 or newer for key targets) and `rsync`, and `sshpass` when the configuration holds a password target. Every remote node needs `rsync` as well, version 3.0 or newer on both sides. Julia 1.10 or later.
 
 ## Installation
 
@@ -44,4 +44,4 @@ clean_all_remote_targets(config; dry_run=true)
 SshDataBridge.main(["probe", "--config", "config.toml"])
 ```
 
-The library functions do not ask for confirmation. [`clean_remote_target`](@ref) purges when called, and [`pull_target`](@ref) purges after a verified harvest when `clean_remote_after_pull` is set. The `--yes` gate belongs to the command line. The rule against overlapping targets is checked when a [`BridgeConfig`](@ref) is built; the functions that take a single target act on the target they are given.
+The library functions do not ask for confirmation. [`clean_remote_target`](@ref) purges when called, and [`pull_target`](@ref) purges after a verified harvest when `clean_remote_after_pull` is set. The `--yes` gate belongs to the command line. The rule against overlapping targets is checked when a [`BridgeConfig`](@ref) is built, on the configured hosts; the command-line driver repeats it on the hosts that `ssh -G` evaluates ([`resolve_endpoints`](@ref), [`check_endpoint_overlaps`](@ref)), which a library caller runs itself. The functions that take a single target act on the target they are given.
