@@ -59,7 +59,7 @@
                   AuthorizedKeysFile $(authorized_keys)
                   UsePAM no
                   StrictModes no
-                  PasswordAuthentication no
+                  PasswordAuthentication yes
                   KbdInteractiveAuthentication no
                   PubkeyAuthentication yes
                   LogLevel VERBOSE
@@ -121,6 +121,10 @@
                     Port $(port)
                     HostKeyAlias sshdatabridge-unknown-jump
                     IdentityFile "$(plain_key)"
+                  Host passwordjump
+                    HostName 127.0.0.1
+                    Port $(port)
+                    IdentityFile $(joinpath(lab, "no-such-key"))
                   """)
             bin = joinpath(lab, "bin")
             mkpath(bin)
@@ -257,6 +261,27 @@
             @test r.code == 2
             @test r.seconds < 10
             @test !isfile(asked)
+            @test occursin("prompt refused", r.out)
+            @test occursin("Enter passphrase for key", r.out)
+            @test occursin("allows no prompt", r.out)
+
+            # A jump host that asks for a password receives no attempt: the refusal ends
+            # the ssh that asked instead of letting it send an empty password
+            failed_passwords() = count(line -> occursin("Failed password", line),
+                                       readlines(sshd_log))
+            before = failed_passwords()
+            password_jumped = write_config("passwordjump",
+                                           [key_target("pwjumped", "labalias", plain_key,
+                                                       joinpath(lab, "remote", "pwjumped");
+                                                       proxy_jump="passwordjump")])
+            r = drive(["probe", "--config", password_jumped]; askpass=recorder,
+                      display=":sshdatabridge-test")
+            @test r.code == 2
+            @test r.seconds < 10
+            @test occursin("prompt refused", r.out) && occursin("password", r.out)
+            @test !isfile(asked)
+            sleep(0.5)
+            @test failed_passwords() == before
 
             # strict_host_key_checking does not reach the jump host: an unknown jump-host
             # key fails at once, without a confirmation dialog, and the message says why
@@ -268,7 +293,7 @@
                       display=":sshdatabridge-test")
             @test r.code == 2
             @test r.seconds < 10
-            @test occursin("Host key verification failed", r.out)
+            @test occursin("authenticity of host", r.out)
             @test occursin("does not reach a jump host", r.out)
             @test !isfile(asked)
 

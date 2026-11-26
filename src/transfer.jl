@@ -75,13 +75,16 @@ end
 """
     push_filter_arguments(push_opts::PushOptions)::Vector{String}
 
-`rsync` filter rules of a deployment, in precedence order: the exclude patterns, then
-the include patterns, then the dir-merge filter that applies the `.gitignore` of the
-source tree. `rsync` takes the first matching rule, so an exclude always wins and an
-include re-admits a path that `.gitignore` would drop (`/Manifest.toml`, for example).
+`rsync` filter rules of a deployment, in precedence order: the ownership marker at the
+root of the source tree (see [`claim_script`](@ref)), which would otherwise replace the
+claim just made, then the exclude patterns, then the include patterns, then the
+dir-merge filter that applies the `.gitignore` of the source tree. `rsync` takes the
+first matching rule, so an exclude always wins and an include re-admits a path that
+`.gitignore` would drop (`/Manifest.toml`, for example).
 """
 function push_filter_arguments(push_opts::PushOptions)::Vector{String}
-    args = String["--exclude=$(pattern)" for pattern in push_opts.excludes]
+    args = String["--exclude=/$(OWNERSHIP_MARKER)"]
+    append!(args, ["--exclude=$(pattern)" for pattern in push_opts.excludes])
     for pattern in push_opts.includes
         push!(args, "--include=$(pattern)")
     end

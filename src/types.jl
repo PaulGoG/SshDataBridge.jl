@@ -50,9 +50,12 @@ A remote compute node and the layout of its campaign directory.
   connection, as ~/.ssh/config provides).
 - `password::Union{Nothing, String}`: remote password of a password target, `nothing`
   for a key target; never printed by `show`.
-- `identity_file::Union{Nothing, String}`: private key of a key target, stored after
-  `expanduser` (`-i <path> -o IdentitiesOnly=yes`).
-- `proxy_jump::Union{Nothing, String}`: jump-host specification of a key target (`-J`).
+- `identity_file::Union{Nothing, String}`: private key of a key target, or a public key
+  selecting an agent key, stored with a leading `~/` expanded
+  (`-i <path> -o IdentitiesOnly=yes`).
+- `proxy_jump::Union{Nothing, String}`: jump-host specification of a key target (`-J`),
+  or `"none"` (any target) to connect directly whatever ~/.ssh/config routes
+  (`-o ProxyCommand=none`).
 - `remote_dir::String`: absolute base directory of the campaign on the remote host.
 - `output_subdir::String`: output directory relative to `remote_dir` (default `"output"`).
 - `strict_host_key_checking::Union{String, Nothing}`: optional host key policy override.
@@ -103,8 +106,14 @@ struct BridgeTarget
                           proxy_jump::Union{Nothing, AbstractString}=nothing,
                           output_subdir::AbstractString="output",
                           strict_host_key_checking::Union{Nothing, AbstractString}=nothing)
+        # A string is compared before Symbol(), which throws on a NUL byte without naming the key
+        if auth isa AbstractString && !(auth in ("password", "key"))
+            throw(ArgumentError("Target 'auth' must be \"password\" or \"key\" (received: $(repr(auth)); target '$(name)')."))
+        end
         method = Symbol(auth)
-        key_path = identity_file === nothing ? nothing : expanduser(identity_file)
+        # A password target is refused for having identity_file at all, whatever its form
+        key_path = identity_file === nothing || method != :key ? identity_file :
+                   expand_identity_file(identity_file, "target '$(name)'")
         validate_bridge_target_fields(name, host, port, user, method, password, key_path,
                                       proxy_jump, remote_dir, output_subdir,
                                       strict_host_key_checking)

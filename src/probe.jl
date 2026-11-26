@@ -1,18 +1,52 @@
 # Binaries every action needs; `sshpass` is added when a password target is configured.
 const REQUIRED_LOCAL_BINARIES = ("ssh", "rsync")
 
+# SSH_ASKPASS_REQUIRE, on which the prompt refusal of key targets rests, appeared in 8.4.
+const MINIMUM_OPENSSH_VERSION = v"8.4"
+
+"""
+    openssh_version()::Union{Nothing, VersionNumber}
+
+Version of the `ssh` client in `PATH` as `ssh -V` reports it (`OpenSSH_9.9p2, ...` gives
+`v"9.9"`), or `nothing` when `ssh` cannot be run or is not OpenSSH.
+"""
+function openssh_version()::Union{Nothing, VersionNumber}
+    report = IOBuffer()
+    try
+        run(pipeline(ignorestatus(`ssh -V`); stdin=devnull, stdout=report, stderr=report))
+    catch err
+        err isa Base.IOError || rethrow()
+        return nothing
+    end
+    m = match(r"OpenSSH_(\d+)\.(\d+)", String(take!(report)))
+    m === nothing && return nothing
+    # Both groups are mandatory, so they captured whenever the pattern matched
+    return VersionNumber(parse(Int, m[1]::AbstractString), parse(Int, m[2]::AbstractString))
+end
+
 """
     check_local_binaries(targets::AbstractVector{BridgeTarget})
 
 Verify that `ssh` and `rsync` are available in `PATH`, and `sshpass` as well when a
 password target is among `targets`. Throws [`MissingBinaryError`](@ref) naming the
-missing binaries otherwise.
+missing binaries otherwise. When a key target is among `targets`, `ssh` must be OpenSSH
+8.4 or newer, whose `SSH_ASKPASS_REQUIRE` keeps every prompt off the terminal (see
+[`prompt_refusal_environment`](@ref)); an older or unidentified client is refused with
+an `ArgumentError`.
 """
 function check_local_binaries(targets::AbstractVector{BridgeTarget})
     required = any(target -> target.auth == :password, targets) ?
                ("ssh", "sshpass", "rsync") : REQUIRED_LOCAL_BINARIES
     missing_binaries = String[bin for bin in required if Sys.which(bin) === nothing]
     isempty(missing_binaries) || throw(MissingBinaryError(missing_binaries))
+    if any(target -> target.auth == :key, targets)
+        version = openssh_version()
+        if version === nothing || version < MINIMUM_OPENSSH_VERSION
+            found = version === nothing ? "an ssh that does not report an OpenSSH version" :
+                    "OpenSSH $(version.major).$(version.minor)"
+            throw(ArgumentError("Key targets need OpenSSH $(MINIMUM_OPENSSH_VERSION.major).$(MINIMUM_OPENSSH_VERSION.minor) or newer on this machine, whose SSH_ASKPASS_REQUIRE keeps the prompts of jump hosts off the terminal; found $(found)."))
+        end
+    end
     return nothing
 end
 
@@ -40,18 +74,56 @@ function keepalive_options(globals::GlobalOptions)::Vector{String}
                   "-o", "ServerAliveCountMax=$(globals.server_alive_count_max)"]
 end
 
+# Run by ssh in place of a prompt of a key target. An askpass that merely fails makes ssh
+# answer with an empty string, an empty password at a jump host that asks for one, so the
+# program ends the ssh that asked, after reporting the first line of the prompt.
+const PROMPT_REFUSAL_SCRIPT = """
+    #!/bin/sh
+    printf 'prompt refused, auth = "key" allows none: %s\\n' "\$(printf '%s\\n' "\$1" | head -n 1)" >&2
+    kill -TERM "\$PPID"
+    exit 1
+    """
+
+# Marker of the report above, matched by the probe to explain a failure.
+const PROMPT_REFUSAL_REPORT = "prompt refused, auth = \"key\" allows none"
+
+const PROMPT_REFUSAL_PROGRAM = Ref("")
+const PROMPT_REFUSAL_LOCK = ReentrantLock()
+
+"""
+    prompt_refusal_program()::String
+
+Path of an executable copy of the prompt-refusal script, written on first use into a
+private temporary directory that Julia removes at exit, and written again when the copy
+has gone.
+"""
+function prompt_refusal_program()::String
+    return lock(PROMPT_REFUSAL_LOCK) do
+        path = PROMPT_REFUSAL_PROGRAM[]
+        if isempty(path) || !isfile(path)
+            path = joinpath(mktempdir(; prefix="sshdatabridge-"), "refuse-prompt")
+            write(path, PROMPT_REFUSAL_SCRIPT)
+            chmod(path, 0o700)
+            PROMPT_REFUSAL_PROGRAM[] = path
+        end
+        return path
+    end
+end
+
 """
     prompt_refusal_environment()::Vector{Pair{String, String}}
 
-Environment of the commands of a key target: `SSH_ASKPASS` set to `false` and
-`SSH_ASKPASS_REQUIRE=force` (OpenSSH ≥ 8.4). `BatchMode` does not reach the ssh that
-`ProxyJump` starts for a jump host, which receives only `-l`, `-p`, `-F`, and `-v`; it
-inherits the environment, however. Every prompt anywhere on the route therefore goes to
-an askpass program that refuses, and the connection fails instead of reading the
-terminal.
+Environment of the commands of a key target: `SSH_ASKPASS` set to
+[`prompt_refusal_program`](@ref) and `SSH_ASKPASS_REQUIRE=force` (OpenSSH ≥ 8.4, which
+[`check_local_binaries`](@ref) requires for key targets). `BatchMode` does not reach the
+ssh that `ProxyJump` starts for a jump host, which receives only `-l`, `-p`, `-F`, and
+`-v`; it inherits the environment, however. Every prompt anywhere on the route therefore
+goes to the program, which reports it on standard error and terminates the ssh that
+asked, so that the connection fails at once, without reading the terminal and without
+sending an empty answer.
 """
 function prompt_refusal_environment()::Vector{Pair{String, String}}
-    return Pair{String, String}["SSH_ASKPASS" => something(Sys.which("false"), "false"),
+    return Pair{String, String}["SSH_ASKPASS" => prompt_refusal_program(),
                                 "SSH_ASKPASS_REQUIRE" => "force"]
 end
 
@@ -85,7 +157,9 @@ password prompt is allowed.
 
 A key target sets `BatchMode=yes`, so that ssh fails instead of prompting, followed by
 `-i <identity_file> -o IdentitiesOnly=yes` and `-J <proxy_jump>` when these are set;
-everything else is left to ~/.ssh/config.
+everything else is left to ~/.ssh/config. `proxy_jump = "none"`, the one value a password
+target admits, is passed as `-o ProxyCommand=none`, which overrides both a `ProxyJump`
+and a `ProxyCommand` of ~/.ssh/config (`-J none` overrides only the former).
 """
 function ssh_options(target::BridgeTarget, globals::GlobalOptions)::Vector{String}
     policy = resolve_target_policy(target, globals)
@@ -103,7 +177,11 @@ function ssh_options(target::BridgeTarget, globals::GlobalOptions)::Vector{Strin
         if target.identity_file !== nothing
             push!(options, "-i", target.identity_file, "-o", "IdentitiesOnly=yes")
         end
-        target.proxy_jump === nothing || push!(options, "-J", target.proxy_jump)
+    end
+    if target.proxy_jump == "none"
+        push!(options, "-o", "ProxyCommand=none")
+    elseif target.proxy_jump !== nothing
+        push!(options, "-J", target.proxy_jump)
     end
     return options
 end
@@ -302,11 +380,14 @@ end
 Check SSH reachability of `target`, the presence of `rsync` on the remote host, and the
 existence of the base and output directories. Connection, authentication, and spawn
 failures are reported through the result, never thrown. A key target refused with
-`Permission denied` gets a hint in the message: no prompt is allowed, so the key must be
-in the agent, or a master connection must be open when the host asks for a second factor.
-A key target that fails with `Host key verification failed` gets one as well: the host-key
-confirmation cannot be answered, and `strict_host_key_checking` is not passed on to jump
-hosts, whose host-key policy comes from `~/.ssh/config`.
+`Permission denied`, or whose route raised a prompt (see
+[`prompt_refusal_environment`](@ref)), gets a hint in the message: no prompt is allowed,
+so the key must be in the agent, or a master connection must be open when the host asks
+for a second factor. A key target that fails with `Host key verification failed`, or
+whose route asked to confirm a host key, gets one as well: the confirmation cannot be
+answered, and `strict_host_key_checking` is not passed on to jump hosts, whose host-key
+policy comes from `~/.ssh/config`. Both hints name the interactive command of
+[`interactive_ssh_command`](@ref).
 """
 function probe_target(target::BridgeTarget, globals::GlobalOptions)::ProbeResult
     cmd = build_ssh_command(target, globals, remote_shell(build_probe_script(target)))
@@ -320,11 +401,14 @@ function probe_target(target::BridgeTarget, globals::GlobalOptions)::ProbeResult
     messages = String[]
     if !ssh_ok
         detail = "ssh exited with code $(outcome.exitcode): $(strip(outcome.stderr))"
-        if target.auth == :key && occursin("Permission denied", outcome.stderr)
-            detail *= "; auth = \"key\" allows no prompt: load the key into the agent, or, if the host asks for a second factor, open a master connection first (ssh -fN $(target_label(target.host, target.user)))"
+        refused = occursin(PROMPT_REFUSAL_REPORT, outcome.stderr)
+        host_key = occursin("Host key verification failed", outcome.stderr) ||
+                   (refused && occursin("authenticity of host", outcome.stderr))
+        if target.auth == :key && host_key
+            detail *= "; auth = \"key\" cannot confirm a host key, and strict_host_key_checking does not reach a jump host: if the key is unknown, record it with one interactive login ($(interactive_ssh_command(target))); a changed key needs your own check"
         elseif target.auth == :key &&
-               occursin("Host key verification failed", outcome.stderr)
-            detail *= "; auth = \"key\" cannot confirm a host key, and strict_host_key_checking does not reach a jump host: if the key is unknown, record it with one interactive login (ssh $(target_label(target.host, target.user))); a changed key needs your own check"
+               (refused || occursin("Permission denied", outcome.stderr))
+            detail *= "; auth = \"key\" allows no prompt: load the key into the agent, or, if the host asks for a second factor, open a master connection first ($(interactive_ssh_command(target; master=true)))"
         end
         push!(messages, detail)
     else
@@ -338,6 +422,31 @@ function probe_target(target::BridgeTarget, globals::GlobalOptions)::ProbeResult
     message = isempty(messages) ? "All remote diagnostics passed." : join(messages, "; ")
     return ProbeResult(target, ssh_ok && rsync_ok, ssh_ok, rsync_ok, remote_dir_exists,
                        remote_output_dir_exists, message)
+end
+
+"""
+    interactive_ssh_command(target::BridgeTarget; master::Bool=false)::String
+
+The `ssh` command line, POSIX-quoted, with which the user reaches `target` interactively
+along the same route as the package: its port, identity file, and jump hosts, without
+`BatchMode`. With `master = true` it opens a background connection (`-fN`), which serves
+later connections when ~/.ssh/config sets `ControlMaster` and `ControlPath` for the host.
+Used in the hints of [`probe_target`](@ref).
+"""
+function interactive_ssh_command(target::BridgeTarget; master::Bool=false)::String
+    arguments = String["ssh"]
+    master && push!(arguments, "-fN")
+    target.port === nothing || push!(arguments, "-p", string(target.port))
+    if target.identity_file !== nothing
+        push!(arguments, "-i", target.identity_file, "-o", "IdentitiesOnly=yes")
+    end
+    if target.proxy_jump == "none"
+        push!(arguments, "-o", "ProxyCommand=none")
+    elseif target.proxy_jump !== nothing
+        push!(arguments, "-J", target.proxy_jump)
+    end
+    push!(arguments, target_label(target.host, target.user))
+    return Base.shell_escape_posixly(arguments...)
 end
 
 """
@@ -364,19 +473,27 @@ is written to a temporary file named after the node and the shell's process ID, 
 hard-linked into place; the link is atomic and fails when the marker exists, also over
 NFS, where `O_EXCL` is not reliable on every server (open(2)). Of two concurrent claims
 exactly one marker is written, and both read it back rather than trust the status of
-`ln`, which NFS can report as failed after a lost reply. The script exits 0 when the
-marker names `name`, 1 when the directory or the marker cannot be created or read, and 97
-when the marker names another target: the nodes share storage, or two targets name one
-directory. The refusal states its reason on standard error. `remote_dir` and `name` are
-POSIX-quoted.
+`ln`, which NFS can report as failed after a lost reply. Before that, the physical
+location of the directory is resolved, and the claim is refused when a marker of another
+target lies in any ancestor or anywhere below it, so that a directory nested in the tree
+of another target is caught as well. The script exits 0 when the marker names `name`, 1
+when the directory or the marker cannot be created, entered, or read, and 97 when the
+marker, or one above or below the directory, names another target: the nodes share
+storage, or two targets name one directory or nested ones. The refusal states its reason
+on standard error. `remote_dir` and `name` are POSIX-quoted.
 """
 function claim_script(remote_dir::AbstractString, name::AbstractString)::String
     directory = Base.shell_escape_posixly(remote_dir)
     owner = Base.shell_escape_posixly(name)
+    marker = OWNERSHIP_MARKER
     return join(["d=$(directory)",
                  "n=$(owner)",
-                 "m=\"\$d/$(OWNERSHIP_MARKER)\"",
+                 "m=\"\$d/$(marker)\"",
                  "mkdir -p -- \"\$d\" || exit 1",
+                 "r=\$(cd -- \"\$d\" && pwd -P) || exit 1",
+                 "x=\$r; while [ \"\$x\" != / ]; do x=\$(dirname -- \"\$x\"); if [ -f \"\$x/$(marker)\" ]; then o=\$(cat -- \"\$x/$(marker)\") || o='?'; if [ \"\$o\" != \"\$n\" ]; then echo \"push refused: \$d lies inside \$x, which is in use by target '\$o'\" >&2; exit 97; fi; fi; done",
+                 "f=\$(find \"\$r\" -type f -name $(marker) ! -path \"\$r/$(marker)\" ! -exec grep -qxF -e \"\$n\" {} \\; -print 2>/dev/null | head -n 1)",
+                 "if [ -n \"\$f\" ]; then echo \"push refused: \$d contains \$f of another target\" >&2; exit 97; fi",
                  "if [ ! -f \"\$m\" ]; then t=\"\$m.\$(uname -n).\$\$\"; printf '%s\\n' \"\$n\" > \"\$t\" || exit 1; ln -- \"\$t\" \"\$m\" 2>/dev/null; rm -f -- \"\$t\"; fi",
                  "o=\$(cat -- \"\$m\") || exit 1",
                  "[ \"\$o\" = \"\$n\" ] && exit 0",
