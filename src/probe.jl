@@ -304,6 +304,9 @@ existence of the base and output directories. Connection, authentication, and sp
 failures are reported through the result, never thrown. A key target refused with
 `Permission denied` gets a hint in the message: no prompt is allowed, so the key must be
 in the agent, or a master connection must be open when the host asks for a second factor.
+A key target that fails with `Host key verification failed` gets one as well: the host-key
+confirmation cannot be answered, and `strict_host_key_checking` is not passed on to jump
+hosts, whose host-key policy comes from `~/.ssh/config`.
 """
 function probe_target(target::BridgeTarget, globals::GlobalOptions)::ProbeResult
     cmd = build_ssh_command(target, globals, remote_shell(build_probe_script(target)))
@@ -319,6 +322,9 @@ function probe_target(target::BridgeTarget, globals::GlobalOptions)::ProbeResult
         detail = "ssh exited with code $(outcome.exitcode): $(strip(outcome.stderr))"
         if target.auth == :key && occursin("Permission denied", outcome.stderr)
             detail *= "; auth = \"key\" allows no prompt: load the key into the agent, or, if the host asks for a second factor, open a master connection first (ssh -fN $(target_label(target.host, target.user)))"
+        elseif target.auth == :key &&
+               occursin("Host key verification failed", outcome.stderr)
+            detail *= "; auth = \"key\" cannot confirm a host key, and strict_host_key_checking does not reach a jump host: if the key is unknown, record it with one interactive login (ssh $(target_label(target.host, target.user))); a changed key needs your own check"
         end
         push!(messages, detail)
     else

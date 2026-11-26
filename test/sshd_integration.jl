@@ -116,6 +116,11 @@
                     HostName 127.0.0.1
                     Port $(port)
                     IdentityFile $(enc_key)
+                  Host unknownjump
+                    HostName 127.0.0.1
+                    Port $(port)
+                    HostKeyAlias sshdatabridge-unknown-jump
+                    IdentityFile "$(plain_key)"
                   """)
             bin = joinpath(lab, "bin")
             mkpath(bin)
@@ -251,6 +256,20 @@
                       display=":sshdatabridge-test")
             @test r.code == 2
             @test r.seconds < 10
+            @test !isfile(asked)
+
+            # strict_host_key_checking does not reach the jump host: an unknown jump-host
+            # key fails at once, without a confirmation dialog, and the message says why
+            unknown = write_config("unknownjump",
+                                   [key_target("unknown", "labalias", plain_key,
+                                               joinpath(lab, "remote", "unknown");
+                                               proxy_jump="unknownjump")])
+            r = drive(["probe", "--config", unknown]; askpass=recorder,
+                      display=":sshdatabridge-test")
+            @test r.code == 2
+            @test r.seconds < 10
+            @test occursin("Host key verification failed", r.out)
+            @test occursin("does not reach a jump host", r.out)
             @test !isfile(asked)
 
             socket = joinpath(lab, "agent.sock")
