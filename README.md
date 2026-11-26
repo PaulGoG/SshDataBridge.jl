@@ -66,6 +66,7 @@ julia scripts/run.jl pull --target Cluster-Node-02      # one target only; --tar
 julia scripts/run.jl clean --yes                        # purge without harvesting
 julia scripts/run.jl clean --dry-run                    # show what a purge would remove
 julia test/runtests.jl                                  # test suite
+SSHDATABRIDGE_SSHD_TESTS=1 julia test/runtests.jl       # also against an unprivileged sshd on 127.0.0.1
 julia docs/make.jl                                      # build the documentation into docs/build
 julia format/format.jl                                  # format the sources
 julia format/format.jl --check                          # verify formatting without writing
@@ -246,7 +247,8 @@ SshDataBridge.jl/
 └── test/
     ├── Project.toml         # Test environment: Aqua, JET, ExplicitImports
     ├── activate.jl          # Activates the test environment against the local source
-    └── runtests.jl          # Static analysis, unit tests, stub-binary process tests, command-line scenarios
+    ├── runtests.jl          # Static analysis, unit tests, stub-binary process tests, command-line scenarios
+    └── sshd_integration.jl  # Opt-in: the driver against an unprivileged sshd on 127.0.0.1 with throwaway keys
 ```
 
 </details>

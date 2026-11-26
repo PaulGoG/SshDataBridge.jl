@@ -2539,4 +2539,9 @@ const DRIVER_SCENARIOS = [(; arguments=["probe"], stub_exit=0, expected=0,
             @test any(startswith("-a --partial"), pushed.lines)
         end
     end
+
+    # Opt-in: runs an unprivileged sshd on 127.0.0.1 with throwaway keys.
+    if get(ENV, "SSHDATABRIDGE_SSHD_TESTS", "") == "1"
+        include("sshd_integration.jl")
+    end
 end
