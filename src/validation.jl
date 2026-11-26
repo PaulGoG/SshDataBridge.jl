@@ -1,6 +1,7 @@
 const VALID_HOST_KEY_POLICIES = ("accept-new", "yes", "no")
 const VALID_COLLISION_STRATEGIES = (:resume, :backup, :abort)
 const VALID_PURGE_SCOPES = (:output, :project)
+const VALID_AUTH_METHODS = (:password, :key)
 
 # Defaults shared by the option constructors and the configuration parser.
 const DEFAULT_CONNECT_TIMEOUT = 10
@@ -27,12 +28,15 @@ const DEFAULT_CLEAN_REMOTE_AFTER_PULL = false
 const DEFAULT_PURGE_SCOPE = :project
 
 # The patterns end in \z, not $, which would also match before a final newline.
-const HOSTNAME_PATTERN = r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\.?\z"
+const HOSTNAME_PATTERN = r"^[A-Za-z0-9_](?:[A-Za-z0-9_-]{0,61}[A-Za-z0-9_])?(?:\.[A-Za-z0-9_](?:[A-Za-z0-9_-]{0,61}[A-Za-z0-9_])?)*\.?\z"
 const IPV6_PATTERN = r"^(?=[0-9A-Fa-f:.]*[0-9A-Fa-f])[0-9A-Fa-f]{0,4}(?::[0-9A-Fa-f]{0,4}){2,7}(?:\.[0-9]{1,3}){0,3}\z"
 const USERNAME_PATTERN = r"^[A-Za-z_][A-Za-z0-9._-]{0,31}\z"
 const TARGET_NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\z"
 const CONTROL_CHARACTER_PATTERN = r"[\x00-\x1f\x7f]"
 const MAX_HOSTNAME_LENGTH = 253
+
+# One hop of an `ssh -J` specification: [user@]host[:port], IPv6 hosts in brackets.
+const PROXY_JUMP_HOP_PATTERN = r"^(?:(?<user>[^@]+)@)?(?<host>\[[^\]]+\]|[^:\[\]@]+)(?::(?<port>[0-9]{1,5}))?\z"
 
 # A host whose labels are all numbers is an address to the C library, which reads a field
 # with a leading zero as octal and one with a leading 0x as hexadecimal. Both forms are
@@ -53,12 +57,62 @@ const PROTECTED_ROOT_COMPONENTS = ("bin", "boot", "dev", "etc", "lib", "lib64", 
 """
     is_valid_host(host::AbstractString)::Bool
 
-Whether `host` is a syntactically valid DNS hostname, IPv4 address, or IPv6 literal
-(without square brackets, which `ssh` does not strip from `user@host`).
+Whether `host` is a syntactically valid DNS hostname, ssh_config `Host` alias, IPv4
+address, or IPv6 literal (without square brackets, which `ssh` does not strip from
+`user@host`). Names and aliases are dot-separated labels of letters, digits, `_`, and
+interior hyphens; a leading `-` never matches, so that a host is never read as an `ssh`
+option.
 """
 function is_valid_host(host::AbstractString)::Bool
     return length(host) <= MAX_HOSTNAME_LENGTH &&
            (occursin(HOSTNAME_PATTERN, host) || occursin(IPV6_PATTERN, host))
+end
+
+"""
+    target_label(host::AbstractString, user::Union{Nothing, AbstractString})::String
+
+Destination as `ssh` receives it: `user@host`, or `host` alone when `user` is `nothing`
+and ssh_config or the local account name supplies it. Used in messages and as the last
+argument of the `ssh` command.
+"""
+function target_label(host::AbstractString, user::Union{Nothing, AbstractString})::String
+    return user === nothing ? String(host) : "$(user)@$(host)"
+end
+
+"""
+    is_valid_proxy_jump(spec::AbstractString)::Bool
+
+Whether `spec` is a jump-host specification accepted for `ssh -J`: one or more
+`[user@]host[:port]` hops separated by commas, an IPv6 host enclosed in square brackets,
+or exactly `none`, which disables a `ProxyJump` set in ~/.ssh/config. Each user must be a
+valid account name, each host a valid host name, alias, or IPv4 address (an IPv6 literal
+only in brackets), and each port lie in `1:65535`. Empty specifications and hops,
+control characters, and `ssh://` URIs are refused.
+"""
+function is_valid_proxy_jump(spec::AbstractString)::Bool
+    spec == "none" && return true
+    occursin(CONTROL_CHARACTER_PATTERN, spec) && return false
+    for hop in split(spec, ',')
+        m = match(PROXY_JUMP_HOP_PATTERN, hop)
+        m === nothing && return false
+        user = m[:user]
+        if user !== nothing && !occursin(USERNAME_PATTERN, user)
+            return false
+        end
+        # The host group is not optional: it captured whenever the hop matched.
+        host = m[:host]::AbstractString
+        if startswith(host, '[')
+            occursin(IPV6_PATTERN, chop(host; head=1, tail=1)) || return false
+        elseif occursin(':', host) || !is_valid_host(host)
+            return false
+        end
+        port = m[:port]
+        if port !== nothing
+            number = tryparse(Int, port)
+            (number !== nothing && 1 <= number <= 65535) || return false
+        end
+    end
+    return true
 end
 
 """
@@ -247,20 +301,71 @@ function validate_patterns(patterns::AbstractVector, key::AbstractString)
 end
 
 """
-    validate_bridge_target_fields(name, host, port, user, password, remote_dir,
-                                  output_subdir, strict_host_key_checking)
+    validate_identity_file(path::AbstractString, context::AbstractString)
+
+Require `path`, already passed through `expanduser`, to name a private key that `ssh`
+accepts and that the remote-shell string of rsync can carry: free of control characters
+and single quotes, absolute, a regular file, and inaccessible to group and others. The
+file content is never read. Throws `ArgumentError` naming the violated condition, also
+when the path cannot be inspected; `context` names the target in the message.
+"""
+function validate_identity_file(path::AbstractString, context::AbstractString)
+    if has_control_characters(path)
+        throw(ArgumentError("Target 'identity_file' must not contain control characters ($(context))."))
+    end
+    if occursin('\'', path)
+        throw(ArgumentError("Target 'identity_file' must not contain a single quote, which the remote-shell string of rsync cannot carry ($(context))."))
+    end
+    if !startswith(path, '/')
+        throw(ArgumentError("Target 'identity_file' must be an absolute path or start with '~' (received: '$(path)'; $(context))."))
+    end
+    # The ArgumentError is thrown outside the catch block so that no cause is chained.
+    failure = nothing
+    present = try
+        isfile(path)
+    catch err
+        err isa Base.IOError || rethrow()
+        failure = err
+        false
+    end
+    # libuv reports an error as the negated errno on Unix.
+    if failure !== nothing
+        throw(ArgumentError("Target 'identity_file' '$(path)' cannot be inspected: $(Libc.strerror(-failure.code)) ($(context))."))
+    end
+    if !present
+        throw(ArgumentError("Target 'identity_file' '$(path)' is not a regular file ($(context))."))
+    end
+    mode = filemode(path) & 0o777
+    if mode & 0o077 != 0
+        throw(ArgumentError("Target 'identity_file' '$(path)' is accessible to group or others (mode $(string(mode; base=8, pad=3))); ssh refuses such a private key: chmod 600 '$(path)' ($(context))."))
+    end
+    return nothing
+end
+
+"""
+    validate_bridge_target_fields(name, host, port, user, auth, password, identity_file,
+                                  proxy_jump, remote_dir, output_subdir,
+                                  strict_host_key_checking)
 
 Verify every field of a remote target: `name` must be a valid directory name, `host` a
-hostname or IP literal, `port` within `1:65535`, `user` a POSIX user name, `password`
-non-empty and free of control characters, `remote_dir` an absolute path, `output_subdir` a
+hostname, ssh_config alias, or IP literal, `port` (when set) within `1:65535`, `user`
+(when set) a POSIX user name, and `auth` one of `:password` or `:key`. A password target
+requires a non-empty `password` free of control characters and admits neither
+`identity_file` nor `proxy_jump`, since `sshpass` would hand the password to a jump host
+that asks for one. A key target admits no `password`, an `identity_file` that passes
+[`validate_identity_file`](@ref), and a `proxy_jump` that passes
+[`is_valid_proxy_jump`](@ref). `remote_dir` must be an absolute path, `output_subdir` a
 relative path, and `strict_host_key_checking` one of the accepted policies. Throws
 `ArgumentError` on the first violation; error messages never include the password.
 """
 function validate_bridge_target_fields(name::AbstractString,
                                        host::AbstractString,
-                                       port::Integer,
-                                       user::AbstractString,
-                                       password::AbstractString,
+                                       port::Union{Nothing, Integer},
+                                       user::Union{Nothing, AbstractString},
+                                       auth::Symbol,
+                                       password::Union{Nothing, AbstractString},
+                                       identity_file::Union{Nothing, AbstractString},
+                                       proxy_jump::Union{Nothing, AbstractString},
                                        remote_dir::AbstractString,
                                        output_subdir::AbstractString,
                                        strict_host_key_checking::Union{AbstractString,
@@ -278,17 +383,39 @@ function validate_bridge_target_fields(name::AbstractString,
     if is_numeric_host(host) && numeric_address(host) === nothing
         throw(ArgumentError("Target 'host' is numeric but not an IP address that the C library reads (received: '$(host)'; $(context))."))
     end
-    if !(1 <= port <= 65535)
+    if port !== nothing && !(1 <= port <= 65535)
         throw(ArgumentError("Target 'port' must be an integer in 1:65535 (received: $(port); $(context))."))
     end
-    if !occursin(USERNAME_PATTERN, user)
+    if user !== nothing && !occursin(USERNAME_PATTERN, user)
         throw(ArgumentError("Target 'user' must be a POSIX user name: a letter or underscore followed by at most 31 letters, digits, '.', '_', or '-' (received: '$(user)'; $(context))."))
     end
-    if isempty(password)
-        throw(ArgumentError("Target 'password' must not be empty ($(context))."))
+    if !(auth in VALID_AUTH_METHODS)
+        throw(ArgumentError("Target 'auth' must be \"password\" or \"key\" (received: '$(auth)'; $(context))."))
     end
-    if has_control_characters(password)
-        throw(ArgumentError("Target 'password' must not contain control characters ($(context))."))
+    if auth == :password
+        if password === nothing
+            throw(ArgumentError("Target 'password' is mandatory with auth = \"password\" ($(context))."))
+        end
+        if isempty(password)
+            throw(ArgumentError("Target 'password' must not be empty ($(context))."))
+        end
+        if has_control_characters(password)
+            throw(ArgumentError("Target 'password' must not contain control characters ($(context))."))
+        end
+        if identity_file !== nothing
+            throw(ArgumentError("Target 'identity_file' applies to auth = \"key\" only ($(context))."))
+        end
+        if proxy_jump !== nothing
+            throw(ArgumentError("Target 'proxy_jump' is not available with auth = \"password\": sshpass answers the first password prompt it sees, and a jump host asking for a password would receive the target's password; use auth = \"key\" ($(context))."))
+        end
+    else
+        if password !== nothing
+            throw(ArgumentError("Target 'password' must not be set with auth = \"key\" ($(context))."))
+        end
+        identity_file === nothing || validate_identity_file(identity_file, context)
+        if proxy_jump !== nothing && !is_valid_proxy_jump(proxy_jump)
+            throw(ArgumentError("Target 'proxy_jump' must be one or more [user@]host[:port] hops separated by commas, IPv6 addresses in brackets, or \"none\" (received: '$(proxy_jump)'; $(context))."))
+        end
     end
     validate_remote_directory(remote_dir, "remote_dir", context)
     validate_relative_subdirectory(output_subdir, "output_subdir", context)

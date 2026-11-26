@@ -5,8 +5,9 @@ const PUSH_KEYS = ("local_source_dir", "excludes", "includes", "use_gitignore",
                    "require_clean_git")
 const PULL_KEYS = ("local_destination_root", "output_subdir", "includes", "excludes",
                    "collision_strategy", "clean_remote_after_pull", "purge_scope")
-const TARGET_KEYS = ("name", "host", "port", "user", "password", "remote_dir",
-                     "output_subdir", "strict_host_key_checking")
+const TARGET_KEYS = ("name", "host", "port", "user", "auth", "password", "identity_file",
+                     "proxy_jump", "remote_dir", "output_subdir",
+                     "strict_host_key_checking")
 
 """
     reject_unknown_keys(table::AbstractDict, allowed, context::AbstractString)
@@ -54,6 +55,17 @@ function required_value(table::AbstractDict, key::AbstractString, ::Type{T},
 end
 
 """
+    optional_value(table::AbstractDict, key::AbstractString, ::Type{T}, context) where {T}
+
+Return `table[key]` checked to be a `T`, or `nothing` when the key is absent.
+"""
+function optional_value(table::AbstractDict, key::AbstractString, ::Type{T},
+                        context::AbstractString) where {T}
+    haskey(table, key) || return nothing
+    return typed_value(table, key, T, nothing, context)
+end
+
+"""
     resolve_local_path(path::AbstractString, config_dir::AbstractString)::String
 
 Expand a leading `~` and resolve a relative `path` against `config_dir`.
@@ -68,9 +80,10 @@ end
 
 Build a validated [`BridgeConfig`](@ref) from a parsed TOML dictionary. Every table is
 checked for unknown keys and every value for its expected type. `[push].local_source_dir`,
-`[pull].local_destination_root`, and the target keys `name`, `host`, `user`, `password`,
-and `remote_dir` are mandatory; every other key has a default. Relative local paths are
-resolved against `config_dir`.
+`[pull].local_destination_root`, and the target keys `name`, `host`, and `remote_dir` are
+mandatory, `password` with `auth = "password"` (the default); every other key has a
+default or, as `port` and `user`, is left to ~/.ssh/config when absent. Relative local
+paths are resolved against `config_dir`.
 """
 function parse_config(dict::AbstractDict; config_dir::AbstractString=pwd())::BridgeConfig
     reject_unknown_keys(dict, TOP_LEVEL_KEYS, "the top level")
@@ -142,23 +155,24 @@ function parse_config(dict::AbstractDict; config_dir::AbstractString=pwd())::Bri
             throw(ArgumentError("$(context) is not a table."))
         end
         reject_unknown_keys(entry, TARGET_KEYS, context)
-        targets[index] = BridgeTarget(required_value(entry, "name", AbstractString,
-                                                     context),
-                                      required_value(entry, "host", AbstractString,
-                                                     context),
-                                      typed_value(entry, "port", Integer, DEFAULT_PORT,
-                                                  context),
-                                      required_value(entry, "user", AbstractString,
-                                                     context),
-                                      required_value(entry, "password", AbstractString,
-                                                     context),
-                                      required_value(entry, "remote_dir", AbstractString,
-                                                     context),
-                                      typed_value(entry, "output_subdir", AbstractString,
-                                                  pull_opts.output_subdir, context),
-                                      typed_value(entry, "strict_host_key_checking",
-                                                  Union{Nothing, AbstractString}, nothing,
-                                                  context))
+        name = required_value(entry, "name", AbstractString, context)
+        host = required_value(entry, "host", AbstractString, context)
+        remote_dir = required_value(entry, "remote_dir", AbstractString, context)
+        port = optional_value(entry, "port", Integer, context)
+        user = optional_value(entry, "user", AbstractString, context)
+        auth = typed_value(entry, "auth", AbstractString, "password", context)
+        password = optional_value(entry, "password", AbstractString, context)
+        identity_file = optional_value(entry, "identity_file", AbstractString, context)
+        proxy_jump = optional_value(entry, "proxy_jump", AbstractString, context)
+        output_subdir = typed_value(entry, "output_subdir", AbstractString,
+                                    pull_opts.output_subdir, context)
+        policy = typed_value(entry, "strict_host_key_checking",
+                             Union{Nothing, AbstractString}, nothing, context)
+        targets[index] = BridgeTarget(name, host; remote_dir=remote_dir, port=port,
+                                      user=user, auth=auth, password=password,
+                                      identity_file=identity_file, proxy_jump=proxy_jump,
+                                      output_subdir=output_subdir,
+                                      strict_host_key_checking=policy)
     end
 
     return BridgeConfig(globals, push_opts, pull_opts, targets)

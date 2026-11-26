@@ -7,7 +7,7 @@ end
 using Test
 using SshDataBridge
 using SshDataBridge: validate_remote_path_safety, run_authenticated, command_string,
-                     check_local_binaries, ensure_remote_directory, purge_path,
+                     check_local_binaries, claim_remote_directory, purge_path,
                      build_push_command, build_pull_command, prepare_local_pull_directory,
                      assert_clean_git_tree
 using Aqua
@@ -23,6 +23,41 @@ end
 
 const STUB_SCRIPT = raw"""
 #!/bin/sh
+case " $* " in
+    *" -G "*)
+        if [ -n "${STUB_ARGS_FILE:-}" ]; then
+            printf '%s\n' "$*" >> "$STUB_ARGS_FILE"
+        fi
+        if [ -n "${STUB_G_EXIT_CODE:-}" ]; then
+            printf '%s\n' "${STUB_STDERR:-stub stderr}" >&2
+            exit "$STUB_G_EXIT_CODE"
+        fi
+        port=22
+        previous=""
+        for argument in "$@"; do
+            if [ "$previous" = "-p" ]; then port="$argument"; fi
+            previous="$argument"
+        done
+        destination="$previous"
+        host="${destination#*@}"
+        case "$destination" in
+            *@*) user="${destination%%@*}" ;;
+            *) user=stubuser ;;
+        esac
+        mapped="$host"
+        oldifs="$IFS"
+        IFS=','
+        for pair in ${STUB_G_HOSTNAMES:-}; do
+            if [ "${pair%%=*}" = "$host" ]; then mapped="${pair#*=}"; fi
+        done
+        IFS="$oldifs"
+        printf 'hostname %s\nport %s\nuser %s\n' "$mapped" "$port" "$user"
+        if [ -n "${STUB_G_PROXYJUMP:-}" ]; then
+            printf 'proxyjump %s\n' "$STUB_G_PROXYJUMP"
+        fi
+        exit 0
+        ;;
+esac
 if [ "$3" = "rsync" ]; then
     code="${STUB_RSYNC_EXIT_CODE:-${STUB_EXIT_CODE:-0}}"
 else
@@ -46,7 +81,8 @@ exit "$code"
 
 """
     with_stub_binaries(f; exit_code, rsync_exit_code, verify_exit_code, stdout_text,
-                       verify_stdout_text, stderr_text, verify_kill)
+                       verify_stdout_text, stderr_text, verify_kill, g_exit_code,
+                       g_hostnames, g_proxyjump)
 
 Run `f(args_file)` with stub `sshpass`, `ssh`, and `rsync` executables placed first on
 `PATH`. The stubs print `stdout_text` and `stderr_text`, append their argument vector to
@@ -55,6 +91,12 @@ Run `f(args_file)` with stub `sshpass`, `ssh`, and `rsync` executables placed fi
 `--itemize-changes`, prints `verify_stdout_text` instead and exits with
 `verify_exit_code` when that is given; with `verify_kill` the verification pass kills
 itself with SIGKILL.
+
+An invocation carrying `-G` (the evaluation of the ssh configuration) prints `hostname`,
+`port`, and `user` lines and exits with 0, or with `g_exit_code` when that is given. The
+hostname is the destination host mapped through `g_hostnames` (`"alias=hostname,..."`),
+the port is the value after `-p` or 22, the user is that of the destination or
+`stubuser`; `g_proxyjump` adds a `proxyjump` line.
 """
 function with_stub_binaries(f; exit_code::Integer=0,
                             rsync_exit_code::Union{Nothing, Integer}=nothing,
@@ -62,7 +104,10 @@ function with_stub_binaries(f; exit_code::Integer=0,
                             stdout_text::AbstractString="",
                             verify_stdout_text::AbstractString="",
                             stderr_text::AbstractString="stub stderr",
-                            verify_kill::Bool=false)
+                            verify_kill::Bool=false,
+                            g_exit_code::Union{Nothing, Integer}=nothing,
+                            g_hostnames::AbstractString="",
+                            g_proxyjump::Union{Nothing, AbstractString}=nothing)
     return mktempdir() do stubdir
         for name in ("sshpass", "ssh", "rsync")
             path = joinpath(stubdir, name)
@@ -81,13 +126,87 @@ function with_stub_binaries(f; exit_code::Integer=0,
                 "STUB_VERIFY_STDOUT" => verify_stdout_text,
                 "STUB_STDERR" => stderr_text,
                 "STUB_VERIFY_KILL" => (verify_kill ? "1" : nothing),
+                "STUB_G_EXIT_CODE" =>
+                    g_exit_code === nothing ? nothing : string(g_exit_code),
+                "STUB_G_HOSTNAMES" => isempty(g_hostnames) ? nothing : string(g_hostnames),
+                "STUB_G_PROXYJUMP" =>
+                    g_proxyjump === nothing ? nothing :
+                    string(g_proxyjump),
                 "STUB_ARGS_FILE" => args_file) do
             return f(args_file)
         end
     end
 end
 
-recorded_invocations(args_file) = isfile(args_file) ? readlines(args_file) : String[]
+# The stubs record `$*`, so a line carries no program name. The evaluations of the ssh
+# configuration (`-G`) are listed apart from the remaining invocations.
+is_config_query(line::AbstractString)::Bool = occursin(" -G ", " " * line)
+
+function recorded_lines(args_file)
+    return isfile(args_file) ? readlines(args_file) : String[]
+end
+recorded_invocations(args_file) = filter(!is_config_query, recorded_lines(args_file))
+recorded_config_queries(args_file) = filter(is_config_query, recorded_lines(args_file))
+
+function refusal_message(f)
+    err = try
+        f()
+        nothing
+    catch e
+        e
+    end
+    @test err isa ArgumentError
+    return err isa ArgumentError ? err.msg : ""
+end
+
+function contains_run(haystack::AbstractVector, needle::AbstractVector)::Bool
+    n = length(needle)
+    return any(i -> haystack[i:(i + n - 1)] == needle, 1:(length(haystack) - n + 1))
+end
+
+"""
+    with_identity_file(f; subdirectory = "", mode = 0o600)
+
+Run `f(path)` with `path` the absolute path of a stub key file `id_test` of the given
+`mode`, placed in `subdirectory` of a temporary directory.
+"""
+function with_identity_file(f; subdirectory::AbstractString="", mode::Integer=0o600)
+    return mktempdir() do dir
+        directory = joinpath(dir, subdirectory)
+        mkpath(directory)
+        path = joinpath(directory, "id_test")
+        write(path, "stub key\n")
+        chmod(path, mode)
+        return f(path)
+    end
+end
+
+function key_target(identity_file; name="K1", host="hpc", remote_dir="/data/k1",
+                    kwargs...)
+    return BridgeTarget(name, host; remote_dir=remote_dir, auth=:key,
+                        identity_file=identity_file, kwargs...)
+end
+
+function password_target(; name="P1", host="hpc", remote_dir="/data/p1", password="pw",
+                         kwargs...)
+    return BridgeTarget(name, host; remote_dir=remote_dir, password=password, kwargs...)
+end
+
+function pair_config(targets...)
+    return BridgeConfig(GlobalOptions(), PushOptions("/x"), PullOptions("/y"),
+                        collect(targets))
+end
+
+# Environment entries of a command; a command without environment has none.
+cmd_environment(cmd::Cmd) = cmd.env === nothing ? String[] : String.(cmd.env)
+function sets_askpass(cmd::Cmd)::Bool
+    environment = cmd_environment(cmd)
+    return "SSH_ASKPASS_REQUIRE=force" in environment &&
+           any(startswith("SSH_ASKPASS="), environment)
+end
+function mentions_askpass(cmd::Cmd)::Bool
+    return any(startswith("SSH_ASKPASS"), cmd_environment(cmd))
+end
 
 # The purge runs as `sh -c '<script>'`, so a recorded invocation carries the quoted path
 # of the script in its escaped form; the path is matched followed by its closing quote.
@@ -227,7 +346,7 @@ const DRIVER_SCENARIOS = [(; arguments=["probe"], stub_exit=0, expected=0,
                                       "2 succeeded, 0 failed"], spawn=false,
                            description="a verified harvest is followed by the project purge"),
                           (; arguments=["push"], stub_exit=255, expected=2,
-                           fragments=["Remote directory creation failed",
+                           fragments=["Remote directory claim failed",
                                       "0 succeeded, 2 failed"], spawn=false,
                            description="push reports every failed node and exits 2"),
                           (; arguments=["nonsense"], stub_exit=0, expected=1,
@@ -322,7 +441,8 @@ const DRIVER_SCENARIOS = [(; arguments=["probe"], stub_exit=0, expected=0,
         for name in ("", "-lead", "bad/name", "..", "a b", "x"^65, "node\n")
             @test_throws ArgumentError valid_target(; name=name)
         end
-        for host in ("", "192.168.1.1 0", "-bad.example", "a..b", "host_name", "x"^254,
+        @test valid_target(; host="my_cluster").host == "my_cluster"
+        for host in ("", "192.168.1.1 0", "-bad.example", "a..b", "-my_cluster", "x"^254,
                      "bad;rm -rf /", "\$(id)", "[2001:db8::10]", "[::1", "::1]",
                      "node01\n", "::1\n")
             @test_throws ArgumentError valid_target(; host=host)
@@ -834,13 +954,25 @@ const DRIVER_SCENARIOS = [(; arguments=["probe"], stub_exit=0, expected=0,
                        config_error_message(minimal_config(; targets="x")))
         @test occursin("entry #1 is not a table",
                        config_error_message(minimal_config(; targets=Any[1])))
-        for mandatory in ("name", "host", "user", "password", "remote_dir")
+        for mandatory in ("name", "host", "remote_dir")
             incomplete = minimal_target()
             delete!(incomplete, mandatory)
             message = config_error_message(minimal_config(; targets=Any[incomplete]))
             @test occursin("[[targets]] entry #1 is missing the mandatory key '$(mandatory)'",
                            message)
         end
+        # The password is mandatory with auth = "password" only
+        without_password = minimal_target()
+        delete!(without_password, "password")
+        @test occursin("mandatory with auth = \"password\"",
+                       config_error_message(minimal_config(;
+                                                           targets=Any[without_password])))
+        # The user is optional: ssh resolves it from its configuration
+        without_user = minimal_target()
+        delete!(without_user, "user")
+        user_less = parse_config(minimal_config(; targets=Any[without_user])).targets[1]
+        @test user_less.user === nothing
+        @test user_less.port === nothing
 
         # Relative local paths resolve against the configuration directory; ~ expands
         resolved = parse_config(minimal_config(;
@@ -850,7 +982,9 @@ const DRIVER_SCENARIOS = [(; arguments=["probe"], stub_exit=0, expected=0,
         @test resolved.push.local_source_dir == "/cfg/dir/src"
         @test resolved.pull.local_destination_root == joinpath(homedir(), "harvest")
         @test resolved.targets[1].name == "N1"
-        @test resolved.targets[1].port == 22
+        # An absent port or user is left to the ssh configuration
+        @test resolved.targets[1].port === nothing
+        @test resolved.targets[1].user == "u"
 
         # The local paths are mandatory: nothing deploys or harvests into the directory
         # of the tool by omission
@@ -990,6 +1124,15 @@ const DRIVER_SCENARIOS = [(; arguments=["probe"], stub_exit=0, expected=0,
         @test !("--stats" in verification.exec) && !("-v" in verification.exec)
         @test !any(startswith("--log-file="), verification.exec)
 
+        # The ownership marker never travels back: it is the first filter argument, ahead
+        # of the configured excludes
+        for exec in (pull_cmd.exec, verification.exec)
+            marker_index = findfirst(==("--exclude=/.sshdatabridge-target"), exec)
+            @test marker_index !== nothing
+            @test marker_index == findfirst(startswith("--exclude="), exec)
+            @test exec[marker_index + 1] == "--exclude=*.tmp"
+        end
+
         log_config = BridgeConfig(globals, push_opts, pull_opts_resume, [target])
         @test SshDataBridge.transfer_log_path(log_config, target, :pull) ==
               "/local/harvest/RTX-Node.pull.rsync.log"
@@ -1020,17 +1163,18 @@ const DRIVER_SCENARIOS = [(; arguments=["probe"], stub_exit=0, expected=0,
         @test SshDataBridge.transfer_summary("Deployed", 0.5, "", "/l/x.push.rsync.log") ==
               "Deployed successfully in 0.5 s; log: /l/x.push.rsync.log."
 
-        # Include patterns narrow the harvest: excludes first, then the directory rule,
-        # the includes, and a final catch-all exclude; empty directories are pruned.
+        # Include patterns narrow the harvest: the ownership marker and the excludes
+        # first, then the directory rule, the includes, and a final catch-all exclude;
+        # empty directories are pruned.
         @test SshDataBridge.pull_filter_arguments(pull_opts_resume) ==
-              ["--exclude=*.tmp", "--include=*/", "--include=*.csv", "--exclude=*",
-               "--prune-empty-dirs"]
+              ["--exclude=/.sshdatabridge-target", "--exclude=*.tmp", "--include=*/",
+               "--include=*.csv", "--exclude=*", "--prune-empty-dirs"]
         unfiltered = PullOptions("/local/harvest", "output", String[], ["*.tmp", "core.*"])
         @test SshDataBridge.pull_filter_arguments(unfiltered) ==
-              ["--exclude=*.tmp", "--exclude=core.*"]
+              ["--exclude=/.sshdatabridge-target", "--exclude=*.tmp", "--exclude=core.*"]
         @test SshDataBridge.pull_filter_arguments(PullOptions("/local/harvest", "output",
                                                               String[], String[])) ==
-              String[]
+              ["--exclude=/.sshdatabridge-target"]
 
         # Push filter rules: excludes first, then includes, then the .gitignore dir-merge
         @test SshDataBridge.push_filter_arguments(PushOptions("/x", [".git"], false, true,
@@ -1191,7 +1335,7 @@ const DRIVER_SCENARIOS = [(; arguments=["probe"], stub_exit=0, expected=0,
             write(joinpath(victim, "f"), "x")
             link = joinpath(dir, "link")
             symlink(victim, link)
-            run_purge(path) = SshDataBridge.run_captured(`sh -c $(SshDataBridge.purge_script(path))`)
+            run_purge(path) = SshDataBridge.run_captured(`sh -c $(SshDataBridge.purge_script(path, "Node-A"))`)
             refused = run_purge(link)
             @test refused.exitcode == 98
             @test occursin("symbolic link", refused.stderr)
@@ -1229,6 +1373,485 @@ const DRIVER_SCENARIOS = [(; arguments=["probe"], stub_exit=0, expected=0,
             end
             chmod(closed, 0o700)
             @test isfile(joinpath(closed, "f"))
+        end
+    end
+
+    @testset "Key-based targets" begin
+        with_identity_file() do identity
+            target = key_target(identity)
+            @test target.auth === :key
+            @test target.port === nothing
+            @test target.user === nothing
+            @test target.password === nothing
+            @test target.identity_file == identity
+            @test target.proxy_jump === nothing
+            @test target.output_subdir == "output"
+            @test target.strict_host_key_checking === nothing
+            full = key_target(identity; port=2222, user="researcher",
+                              proxy_jump="admin@gw.example.org", output_subdir="results",
+                              strict_host_key_checking="yes")
+            @test full.port == 2222
+            @test full.user == "researcher"
+            @test full.proxy_jump == "admin@gw.example.org"
+            @test full.output_subdir == "results"
+            @test full.strict_host_key_checking == "yes"
+            @test key_target(nothing).identity_file === nothing
+            @test key_target(identity; host="my_cluster").host == "my_cluster"
+            @test password_target(; host="my_cluster").host == "my_cluster"
+            @test_throws ArgumentError key_target(identity; host="-hpc")
+            @test_throws ArgumentError key_target(identity; port=0)
+            @test_throws ArgumentError key_target(identity; user="a b")
+
+            # The positional constructor keeps building password targets
+            legacy = BridgeTarget("N", "hpc", 22, "researcher", "pw", "/d/e")
+            @test legacy.auth === :password
+            @test legacy.identity_file === nothing
+            @test legacy.proxy_jump === nothing
+
+            # A leading tilde is expanded
+            mktempdir() do home
+                mkpath(joinpath(home, ".ssh"))
+                tilde = joinpath(home, ".ssh", "id_tilde")
+                write(tilde, "stub key\n")
+                chmod(tilde, 0o600)
+                expanded = withenv("HOME" => home) do
+                    return key_target("~/.ssh/id_tilde").identity_file
+                end
+                @test expanded == tilde
+            end
+
+            # Authentication method and its dependent fields
+            message = refusal_message() do
+                return BridgeTarget("N", "hpc"; remote_dir="/d/e", auth=:agent,
+                                    password="pw-never-printed")
+            end
+            @test occursin("'auth'", message)
+            @test !occursin("pw-never-printed", message)
+            @test occursin("mandatory with auth = \"password\"",
+                           refusal_message(() -> BridgeTarget("N", "hpc";
+                                                              remote_dir="/d/e")))
+            @test occursin("applies to auth = \"key\" only",
+                           refusal_message(() -> password_target(;
+                                                                 identity_file=identity)))
+            @test occursin("sshpass",
+                           refusal_message(() -> password_target(;
+                                                                 proxy_jump="gw.example.org")))
+            message = refusal_message() do
+                return BridgeTarget("N", "hpc"; remote_dir="/d/e", auth=:key,
+                                    identity_file=identity, password="pw-never-printed")
+            end
+            @test occursin("must not be set with auth = \"key\"", message)
+            @test !occursin("pw-never-printed", message)
+
+            # Jump hosts are validated like the argument of ssh -J
+            for spec in ("none", "gw.example.org", "admin@gw.example.org",
+                         "gw.example.org:2200", "admin@gw.example.org:2200,gw2.example.org",
+                         "[2001:db8::1]", "admin@[2001:db8::1]:2200")
+                @test key_target(identity; proxy_jump=spec).proxy_jump == spec
+            end
+            for spec in
+                ("", "gw1,,gw2", "-oProxyCommand=x", "gw:0", "ssh://gw.example.org",
+                 "2001:db8::1")
+                @test_throws ArgumentError key_target(identity; proxy_jump=spec)
+            end
+
+            # Addresses and printed representations
+            @test SshDataBridge.target_address(target) == "hpc"
+            @test SshDataBridge.target_address(key_target(identity; user="researcher")) ==
+                  "researcher@hpc"
+            @test SshDataBridge.target_address(key_target(identity; port=2222)) ==
+                  "hpc:2222"
+            @test SshDataBridge.target_address(full) == "researcher@hpc:2222"
+            for shown in (sprint(show, full), sprint(show, MIME("text/plain"), full))
+                @test occursin("auth = key", shown)
+                @test occursin("researcher@hpc:2222", shown)
+                @test !occursin("<redacted>", shown)
+            end
+            with_password = password_target(; user="researcher",
+                                            password="pw-never-printed")
+            for shown in (sprint(show, with_password),
+                          sprint(show, MIME("text/plain"), with_password))
+                @test occursin("auth = password", shown)
+                @test occursin("researcher@hpc", shown)
+                @test occursin("<redacted>", shown)
+                @test !occursin("pw-never-printed", shown)
+            end
+        end
+
+        # The identity file is checked on disk
+        with_identity_file(; subdirectory="it's keys") do quoted
+            @test occursin("single quote", refusal_message(() -> key_target(quoted)))
+        end
+        with_identity_file(; subdirectory="tab\tdir") do control
+            @test_throws ArgumentError key_target(control)
+        end
+        with_identity_file() do identity
+            @test occursin("absolute path or start with '~'",
+                           refusal_message(() -> key_target("keys/id_test")))
+            @test_throws ArgumentError key_target(joinpath(dirname(identity), "absent"))
+            @test occursin("not a regular file",
+                           refusal_message(() -> key_target(dirname(identity))))
+        end
+        for mode in (0o644, 0o640)
+            with_identity_file(; mode=mode) do loose
+                @test occursin("chmod 600", refusal_message(() -> key_target(loose)))
+            end
+        end
+        with_identity_file(; mode=0o600) do strict
+            @test key_target(strict) isa BridgeTarget
+        end
+    end
+
+    @testset "Configuration of key-based targets" begin
+        function config_dict(targets)
+            return Dict{String, Any}("push" =>
+                                         Dict{String, Any}("local_source_dir" => "src"),
+                                     "pull" =>
+                                         Dict{String, Any}("local_destination_root" => "harvest"),
+                                     "targets" => targets)
+        end
+        with_identity_file() do identity
+            key_entry = Dict{String, Any}("name" => "K1", "host" => "hpc", "auth" => "key",
+                                          "identity_file" => identity,
+                                          "proxy_jump" => "admin@gw.example.org",
+                                          "remote_dir" => "/data/k1")
+            parsed = parse_config(config_dict(Any[key_entry])).targets[1]
+            @test parsed.auth === :key
+            @test parsed.identity_file == identity
+            @test parsed.proxy_jump == "admin@gw.example.org"
+            @test parsed.port === nothing
+            @test parsed.user === nothing
+            @test parsed.password === nothing
+
+            password_entry = Dict{String, Any}("name" => "P1", "host" => "hpc",
+                                               "password" => "pw",
+                                               "remote_dir" => "/data/p1")
+            parsed = parse_config(config_dict(Any[password_entry])).targets[1]
+            @test parsed.auth === :password
+            @test parsed.port === nothing
+            @test parsed.user === nothing
+
+            message = refusal_message() do
+                return parse_config(config_dict(Any[merge(key_entry, Dict("auth" => 1))]))
+            end
+            @test occursin("must be of type AbstractString", message)
+        end
+
+        # With no port given, the lexical check reads the ssh default, 22
+        shared = "/data/shared"
+        @test_throws ArgumentError pair_config(password_target(; name="A",
+                                                               remote_dir=shared),
+                                               password_target(; name="B", port=22,
+                                                               remote_dir=shared))
+        @test pair_config(password_target(; name="A", remote_dir=shared),
+                          password_target(; name="B", port=2222, remote_dir=shared)) isa
+              BridgeConfig
+    end
+
+    @testset "Key-target commands" begin
+        globals = GlobalOptions(12, "accept-new", true, 2048)
+        push_opts = PushOptions("/local/workspace", [".git", "*.tmp"], false)
+        pull_opts = PullOptions("/local/harvest", "output", ["*.csv"], ["*.tmp"], :resume,
+                                false)
+        keepalive = SshDataBridge.keepalive_options(globals)
+        common = vcat(["-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=12"],
+                      keepalive, ["-o", "BatchMode=yes"])
+
+        with_identity_file(; subdirectory="my keys") do identity
+            full = key_target(identity; port=2222, user="researcher",
+                              proxy_jump="admin@gw.example.org")
+            bare = key_target(identity; name="K2", host="hpc-login", remote_dir="/data/k2")
+            unkeyed = key_target(nothing; name="K3", host="hpc-agent",
+                                 remote_dir="/data/k3")
+            full_options = vcat(["-p", "2222"], common,
+                                ["-i", identity, "-o", "IdentitiesOnly=yes", "-J",
+                                 "admin@gw.example.org"])
+            @test SshDataBridge.ssh_options(full, globals) == full_options
+            @test SshDataBridge.ssh_options(bare, globals) ==
+                  vcat(common, ["-i", identity, "-o", "IdentitiesOnly=yes"])
+            @test SshDataBridge.ssh_options(unkeyed, globals) == common
+
+            ssh_full = SshDataBridge.build_ssh_command(full, globals, "true")
+            @test ssh_full.exec[1:2] == ["ssh", "-n"]
+            @test contains_run(ssh_full.exec, full_options)
+            @test ssh_full.exec[end - 1] == "researcher@hpc"
+            @test ssh_full.exec[end] == "true"
+            ssh_bare = SshDataBridge.build_ssh_command(bare, globals, "true")
+            @test ssh_bare.exec[end - 1] == "hpc-login"
+            @test ssh_bare.exec[end] == "true"
+
+            push_cmd = build_push_command(full, globals, push_opts)
+            pull_cmd = build_pull_command(full, globals, pull_opts, "/local/harvest/K1")
+            verification = SshDataBridge.build_verification_command(full, globals,
+                                                                    pull_opts,
+                                                                    "/local/harvest/K1")
+            for cmd in (ssh_full, ssh_bare, push_cmd, pull_cmd, verification)
+                @test !("sshpass" in cmd.exec)
+                @test sets_askpass(cmd)
+            end
+            for cmd in (push_cmd, pull_cmd, verification)
+                @test cmd.exec[1:4] == ["rsync", "-a", "--partial", "-s"]
+                rsh = cmd.exec[findfirst(==("-e"), cmd.exec) + 1]
+                @test occursin("BatchMode=yes", rsh)
+                @test occursin("IdentitiesOnly=yes", rsh)
+                @test occursin("-J ", rsh)
+                @test occursin("admin@gw.example.org", rsh)
+            end
+            @test push_cmd.exec[end] == "researcher@hpc:/data/k1/"
+            @test pull_cmd.exec[end - 1] == "researcher@hpc:/data/k1/output/"
+            @test pull_cmd.exec[end] == "/local/harvest/K1/"
+            @test build_push_command(bare, globals, push_opts).exec[end] ==
+                  "hpc-login:/data/k2/"
+            for cmd in (pull_cmd, verification)
+                marker_index = findfirst(==("--exclude=/.sshdatabridge-target"), cmd.exec)
+                @test marker_index !== nothing
+                @test marker_index == findfirst(startswith("--exclude="), cmd.exec)
+                @test cmd.exec[marker_index + 1] == "--exclude=*.tmp"
+            end
+            @test "--dry-run" in verification.exec
+            @test "--itemize-changes" in verification.exec
+
+            ipv6 = key_target(identity; name="K6", host="2001:db8::10",
+                              user="researcher", remote_dir="/data/k6")
+            @test build_push_command(ipv6, globals, push_opts).exec[end] ==
+                  "researcher@[2001:db8::10]:/data/k6/"
+            @test build_push_command(key_target(identity; name="K7", host="2001:db8::10",
+                                                remote_dir="/data/k7"), globals,
+                                     push_opts).exec[end] == "[2001:db8::10]:/data/k7/"
+
+            # Password targets keep sshpass and set no askpass variables
+            pw = password_target(; user="researcher", port=2222)
+            for cmd in (SshDataBridge.build_ssh_command(pw, globals, "true"),
+                        build_push_command(pw, globals, push_opts))
+                @test cmd.exec[1] == "sshpass"
+                @test !mentions_askpass(cmd)
+            end
+        end
+
+        # A path with a space is single-quoted in the remote shell string of rsync
+        with_identity_file(; subdirectory="my keys") do identity
+            target = key_target(identity; user="researcher")
+            rsh = SshDataBridge.build_ssh_rsh_string(target, globals)
+            @test occursin("-i '$(identity)'", rsh)
+            @test !occursin("'-i'", rsh)
+        end
+    end
+
+    @testset "SSH endpoint resolution" begin
+        parse_ssh_config = SshDataBridge.parse_ssh_config
+        SshEndpoint = SshDataBridge.SshEndpoint
+        text = "user researcher\nhostname login.example.org\nport 2222\nproxyjump admin@gw.example.org\nidentityfile ~/.ssh/a\nidentityfile ~/.ssh/b\n"
+        endpoint = parse_ssh_config(text)
+        @test endpoint.hostname == "login.example.org"
+        @test endpoint.port == 2222
+        @test endpoint.user == "researcher"
+        @test endpoint.proxy_jump == "admin@gw.example.org"
+        @test endpoint.proxy_command === nothing
+        @test parse_ssh_config(replace(text,
+                                       "proxyjump admin@gw.example.org" => "proxyjump none")).proxy_jump ===
+              nothing
+        upper = parse_ssh_config("HostName login.example.org\nPort 2222\nUser researcher\n")
+        @test upper.hostname == "login.example.org"
+        @test upper.port == 2222
+        @test upper.user == "researcher"
+        for key in ("hostname", "port", "user")
+            without = join(filter(line -> !startswith(line, key * " "), split(text, '\n')),
+                           "\n")
+            @test_throws ArgumentError parse_ssh_config(without)
+        end
+        for port in ("0", "x")
+            @test_throws ArgumentError parse_ssh_config(replace(text,
+                                                                "port 2222" =>
+                                                                    "port " * port))
+        end
+
+        globals = GlobalOptions(12, "accept-new", true, 0)
+        alias = password_target(; name="A", host="hpc")
+        explicit = password_target(; name="K", host="hpc", port=2222, user="researcher")
+        query = SshDataBridge.ssh_config_command(explicit, globals)
+        @test query.exec[1:2] == ["ssh", "-G"]
+        @test query.exec[end] == "researcher@hpc"
+        @test !("sshpass" in query.exec)
+        @test SshDataBridge.ssh_config_command(alias, globals).exec[end] == "hpc"
+
+        with_stub_binaries(; g_hostnames="hpc=login.example.org") do args_file
+            resolved = SshDataBridge.resolve_endpoint(alias, globals)
+            @test resolved.hostname == "login.example.org"
+            @test resolved.port == 22
+            @test resolved.user == "stubuser"
+            @test resolved.proxy_jump === nothing
+            resolved = SshDataBridge.resolve_endpoint(explicit, globals)
+            @test resolved.hostname == "login.example.org"
+            @test resolved.port == 2222
+            @test resolved.user == "researcher"
+            queries = recorded_config_queries(args_file)
+            @test length(queries) == 2
+            @test all(startswith("-G "), queries)
+            @test isempty(recorded_invocations(args_file))
+        end
+        with_stub_binaries(; g_proxyjump="admin@gw.example.org") do _
+            @test SshDataBridge.resolve_endpoint(alias, globals).proxy_jump ==
+                  "admin@gw.example.org"
+        end
+
+        # Two aliases of one host and port must not share remote directories
+        check = SshDataBridge.check_endpoint_overlaps
+        first_target = password_target(; name="Alpha", host="hpc",
+                                       remote_dir="/data/shared")
+        second_target(dir; name="Beta") = password_target(; name=name, host="hpc-login",
+                                                          remote_dir=dir)
+        login = SshEndpoint("login.example.org", 22, "researcher", nothing, nothing)
+        message = refusal_message() do
+            return check([first_target, second_target("/data/shared")], [login, login])
+        end
+        @test occursin("Alpha", message)
+        @test occursin("Beta", message)
+        @test occursin("same host and port", message)
+        @test_throws ArgumentError check([first_target, second_target("/data/shared/sub")],
+                                         [login, login])
+        @test_throws ArgumentError check([first_target, second_target("/data")],
+                                         [login, login])
+        upper_login = SshEndpoint("Login.Example.org", 22, "researcher", nothing, nothing)
+        @test_throws ArgumentError check([first_target, second_target("/data/shared")],
+                                         [login, upper_login])
+        routed = SshEndpoint("login.example.org", 22, "researcher", "admin@gw.example.org",
+                             nothing)
+        @test_throws ArgumentError check([first_target, second_target("/data/shared")],
+                                         [login, routed])
+        other_port = SshEndpoint("login.example.org", 2222, "researcher", nothing, nothing)
+        @test (check([first_target, second_target("/data/shared")], [login, other_port]);
+               true)
+        @test (check([first_target, second_target("/data/other")], [login, login]); true)
+    end
+
+    @testset "Ownership marker" begin
+        marker = ".sshdatabridge-target"
+        run_claim(dir, name) = SshDataBridge.run_captured(`sh -c $(SshDataBridge.claim_script(dir, name))`)
+        run_purge(path, name) = SshDataBridge.run_captured(`sh -c $(SshDataBridge.purge_script(path, name))`)
+
+        mktempdir() do root
+            # A claim creates the directory and writes the name
+            project = joinpath(root, "project")
+            claimed = run_claim(project, "alpha")
+            @test claimed.exitcode == 0
+            @test isdir(project)
+            @test read(joinpath(project, marker), String) == "alpha\n"
+            @test run_claim(project, "alpha").exitcode == 0
+            @test read(joinpath(project, marker), String) == "alpha\n"
+            refused = run_claim(project, "beta")
+            @test refused.exitcode == 97
+            @test occursin("push refused", refused.stderr)
+            @test occursin("alpha", refused.stderr)
+            @test read(joinpath(project, marker), String) == "alpha\n"
+
+            # Concurrent claims on a fresh directory have one winner
+            for round in 1:20
+                dir = joinpath(root, "race$(round)")
+                names = ("alpha", "beta")
+                processes = [run(pipeline(ignorestatus(`sh -c $(SshDataBridge.claim_script(dir, name))`);
+                                          stdout=devnull, stderr=devnull); wait=false)
+                             for name in names]
+                foreach(wait, processes)
+                @test sort([process.exitcode for process in processes]) == [0, 97]
+                winner = names[findfirst(process -> process.exitcode == 0, processes)]
+                @test read(joinpath(dir, marker), String) == winner * "\n"
+                @test !any(startswith(".sshdatabridge-target."), readdir(dir))
+            end
+
+            # A purge honours the marker of the directory
+            own = mkpath(joinpath(root, "own"))
+            write(joinpath(own, marker), "alpha\n")
+            write(joinpath(own, "f"), "x")
+            foreign = mkpath(joinpath(root, "foreign"))
+            write(joinpath(foreign, marker), "beta\n")
+            write(joinpath(foreign, "f"), "x")
+            refused = run_purge(foreign, "alpha")
+            @test refused.exitcode == 98
+            @test occursin("purge refused", refused.stderr)
+            @test occursin("in use by target", refused.stderr)
+            @test isfile(joinpath(foreign, "f"))
+            @test run_purge(own, "alpha").exitcode == 0
+            @test !isdir(own)
+
+            # The marker of an ancestor decides for a purge of the output directory
+            ancestor = mkpath(joinpath(root, "ancestor"))
+            write(joinpath(ancestor, marker), "alpha\n")
+            mkpath(joinpath(ancestor, "output"))
+            write(joinpath(ancestor, "output", "f"), "x")
+            @test run_purge(joinpath(ancestor, "output"), "alpha").exitcode == 0
+            @test !isdir(joinpath(ancestor, "output"))
+            @test isdir(ancestor)
+            @test isfile(joinpath(ancestor, marker))
+            mkpath(joinpath(ancestor, "output"))
+            write(joinpath(ancestor, "output", "f"), "x")
+            refused = run_purge(joinpath(ancestor, "output"), "beta")
+            @test refused.exitcode == 98
+            @test isfile(joinpath(ancestor, "output", "f"))
+
+            # A marker below the purged directory counts as well
+            nested = mkpath(joinpath(root, "nested", "sub"))
+            write(joinpath(nested, marker), "beta\n")
+            write(joinpath(nested, "f"), "x")
+            refused = run_purge(joinpath(root, "nested"), "alpha")
+            @test refused.exitcode == 98
+            @test occursin("belongs to another target", refused.stderr)
+            @test isfile(joinpath(nested, "f"))
+            @test run_purge(joinpath(root, "nested"), "beta").exitcode == 0
+            @test !isdir(joinpath(root, "nested"))
+
+            # Without any marker the purge proceeds and says so
+            legacy = mkpath(joinpath(root, "legacy"))
+            write(joinpath(legacy, "f"), "x")
+            unmarked = run_purge(legacy, "alpha")
+            @test unmarked.exitcode == 0
+            @test occursin("purge note:", unmarked.stderr)
+            @test !isdir(legacy)
+
+            # Names and paths with a space and a single quote survive the quoting
+            awkward = joinpath(root, "it's dir")
+            @test run_claim(awkward, "node one").exitcode == 0
+            @test read(joinpath(awkward, marker), String) == "node one\n"
+            @test run_claim(awkward, "node two").exitcode == 97
+            @test run_purge(awkward, "node two").exitcode == 98
+            @test isdir(awkward)
+            @test run_purge(awkward, "node one").exitcode == 0
+            @test !isdir(awkward)
+        end
+    end
+
+    @testset "Prerequisites and safety refusal" begin
+        with_identity_file() do identity
+            key = key_target(identity)
+            password = password_target()
+            mktempdir() do bin
+                for name in ("ssh", "rsync")
+                    path = joinpath(bin, name)
+                    write(path, "#!/bin/sh\nexit 0\n")
+                    chmod(path, 0o700)
+                end
+                withenv("PATH" => bin) do
+                    @test (check_local_binaries([key]); true)
+                    missing_error = try
+                        check_local_binaries([key, password])
+                        nothing
+                    catch err
+                        err
+                    end
+                    @test missing_error isa MissingBinaryError
+                    @test missing_error.binaries == ["sshpass"]
+                end
+            end
+
+            # The user of a key target comes from ssh -G; /home/stubuser is its home
+            globals = GlobalOptions(10, "accept-new", false, 0)
+            homeless = key_target(identity; remote_dir="/home/stubuser")
+            with_stub_binaries() do args_file
+                result = clean_remote_target(homeless, globals)
+                @test !result.success
+                @test startswith(result.message, "Safety refusal")
+                @test !any(occursin("rm -rf", line)
+                           for line in recorded_invocations(args_file))
+            end
         end
     end
 
@@ -1279,8 +1902,11 @@ const DRIVER_SCENARIOS = [(; arguments=["probe"], stub_exit=0, expected=0,
         @test command_string(`rm -rf -- "/a b"`) == "rm -rf -- '/a b'"
 
         # Printed representations of targets and results are redacted
-        @test sprint(show, target) ==
-              "BridgeTarget(\"Node-A\", admin@10.0.0.1:22, remote_dir = \"/rem/sim_a\", output_subdir = \"output\", password = <redacted>)"
+        shown = sprint(show, target)
+        @test occursin("Node-A", shown)
+        @test occursin("auth = password", shown)
+        @test occursin("admin@10.0.0.1:22", shown)
+        @test occursin("<redacted>", shown)
         @test !occursin(password, repr(target))
         @test !occursin(password, sprint(show, MIME("text/plain"), target))
         probe = ProbeResult(target, true, true, true, true, true, "ok")
@@ -1317,16 +1943,19 @@ const DRIVER_SCENARIOS = [(; arguments=["probe"], stub_exit=0, expected=0,
             @test occursin("Connection refused", result.message)
         end
 
+        # The claim creates remote_dir and writes or checks the ownership marker
         with_stub_binaries() do args_file
-            directory = ensure_remote_directory(target, globals, "/rem/sim a")
+            directory = claim_remote_directory(target, globals)
             @test directory.success
             @test directory.exitcode == 0
-            @test occursin("mkdir -p -- '/rem/sim a'",
-                           only(recorded_invocations(args_file)))
+            invocation = only(recorded_invocations(args_file))
+            @test occursin("mkdir -p -- \"\$d\"", invocation)
+            @test occursin("/rem/sim a", invocation)
+            @test occursin(".sshdatabridge-target", invocation)
         end
 
         with_stub_binaries(; exit_code=1, stderr_text="mkdir: permission denied") do _
-            directory = ensure_remote_directory(target, globals, "/rem/sim a")
+            directory = claim_remote_directory(target, globals)
             @test !directory.success
             @test directory.exitcode == 1
             @test occursin("permission denied", directory.stderr)
@@ -1346,13 +1975,25 @@ const DRIVER_SCENARIOS = [(; arguments=["probe"], stub_exit=0, expected=0,
                 @test occursin("partial transfer", result.message)
             end
 
-            # A failing remote mkdir stops the push before rsync runs
+            # A failing claim stops the push before rsync runs
             with_stub_binaries(; exit_code=1, rsync_exit_code=0,
                                stderr_text="mkdir failed") do args_file
                 result = push_target(target, config)
                 @test !result.success
                 @test result.exit_code == 1
-                @test occursin("Remote directory creation failed", result.message)
+                @test occursin("Remote directory claim failed", result.message)
+                @test length(recorded_invocations(args_file)) == 1
+            end
+
+            # A directory claimed by another target refuses the push before rsync runs
+            with_stub_binaries(; exit_code=97, rsync_exit_code=0,
+                               stderr_text="push refused: /rem/sim a is in use by target 'Node-B'",
+                               ) do args_file
+                result = push_target(target, config)
+                @test !result.success
+                @test result.exit_code == 97
+                @test startswith(result.message, "Push refused: ")
+                @test occursin("Node-B", result.message)
                 @test length(recorded_invocations(args_file)) == 1
             end
 
@@ -1588,9 +2229,9 @@ const DRIVER_SCENARIOS = [(; arguments=["probe"], stub_exit=0, expected=0,
 
         mktempdir() do empty_dir
             withenv("PATH" => empty_dir) do
-                @test_throws MissingBinaryError check_local_binaries()
+                @test_throws MissingBinaryError check_local_binaries([target])
                 missing_error = try
-                    check_local_binaries()
+                    check_local_binaries([target])
                     nothing
                 catch err
                     err
@@ -1725,16 +2366,19 @@ const DRIVER_SCENARIOS = [(; arguments=["probe"], stub_exit=0, expected=0,
             remote_dir = "/home/researcher"
             """)
             close(cfg)
-            @test SshDataBridge.main(["clean", "--yes", "--config", path]; io=io,
-                                     err=err) ==
-                  1
-            @test occursin("protected path", String(take!(err)))
-            @test isempty(take!(io))
-            # An unknown --target is refused before anything runs
-            @test SshDataBridge.main(["probe", "--target", "nowhere", "--config", path];
-                                     io=io, err=err) == 1
-            @test occursin("unknown target(s): nowhere", String(take!(err)))
-            @test isempty(take!(io))
+            # The driver evaluates the ssh configuration of every target first; the
+            # stubs answer that query
+            with_stub_binaries() do _
+                @test SshDataBridge.main(["clean", "--yes", "--config", path]; io=io,
+                                         err=err) == 1
+                @test occursin("protected path", String(take!(err)))
+                @test isempty(take!(io))
+                # An unknown --target is refused before anything runs
+                @test SshDataBridge.main(["probe", "--target", "nowhere", "--config",
+                                          path]; io=io, err=err) == 1
+                @test occursin("unknown target(s): nowhere", String(take!(err)))
+                @test isempty(take!(io))
+            end
         end
 
         # Overlapping targets are refused when the configuration is loaded, whatever the
@@ -1759,13 +2403,15 @@ const DRIVER_SCENARIOS = [(; arguments=["probe"], stub_exit=0, expected=0,
             remote_dir = "/home/researcher/campaigns/batch/sub"
             """)
             close(cfg)
-            @test SshDataBridge.main(["probe", "--config", path]; io=io, err=err) == 1
-            @test occursin("overlap", String(take!(err)))
-            @test isempty(take!(io))
-            @test SshDataBridge.main(["clean", "--yes", "--target", "One", "--config",
-                                      path]; io=io, err=err) == 1
-            @test occursin("overlap", String(take!(err)))
-            @test isempty(take!(io))
+            with_stub_binaries() do _
+                @test SshDataBridge.main(["probe", "--config", path]; io=io, err=err) == 1
+                @test occursin("overlap", String(take!(err)))
+                @test isempty(take!(io))
+                @test SshDataBridge.main(["clean", "--yes", "--target", "One", "--config",
+                                          path]; io=io, err=err) == 1
+                @test occursin("overlap", String(take!(err)))
+                @test isempty(take!(io))
+            end
         end
     end
 
@@ -1793,6 +2439,104 @@ const DRIVER_SCENARIOS = [(; arguments=["probe"], stub_exit=0, expected=0,
                     end
                 end
             end
+        end
+    end
+
+    @testset "Endpoint evaluation in the driver" begin
+        head = """
+        [globals]
+        connect_timeout = 5
+        strict_host_key_checking = "accept-new"
+
+        [push]
+        local_source_dir = "."
+        require_clean_git = false
+
+        [pull]
+        local_destination_root = "harvest"
+        """
+        markers = "RSYNC_OK\nDIR_EXISTS\nOUT_EXISTS"
+        mktempdir() do dir
+            identity = joinpath(dir, "id_test")
+            write(identity, "stub key\n")
+            chmod(identity, 0o600)
+            function write_config(name, targets)
+                path = joinpath(dir, name)
+                write(path, head * targets)
+                chmod(path, 0o600)
+                return path
+            end
+            function key_entry(name, host, remote_dir)
+                return "\n[[targets]]\nname = \"$(name)\"\nhost = \"$(host)\"\n" *
+                       "auth = \"key\"\nidentity_file = \"$(identity)\"\n" *
+                       "remote_dir = \"$(remote_dir)\"\n"
+            end
+
+            # Two aliases of one host: the lexical check passes, the evaluated one refuses
+            aliases = write_config("aliases.toml",
+                                   key_entry("hpc", "hpc", "/scratch/shared/campaign") *
+                                   key_entry("hpc-login", "hpc-login",
+                                             "/scratch/shared/campaign"))
+            hostnames = "hpc=login.example.org,hpc-login=login.example.org"
+            for arguments in (["probe"], ["probe", "--target", "hpc"])
+                outcome = with_stub_binaries(; g_hostnames=hostnames) do _
+                    return invoke_driver(arguments, aliases)
+                end
+                @test outcome.exitcode == 1
+                @test occursin("same host and port", outcome.output)
+            end
+            # Distinct hosts behind the aliases are accepted
+            outcome = with_stub_binaries(; stdout_text=markers) do _
+                return invoke_driver(["probe"], aliases)
+            end
+            @test outcome.exitcode == 0
+
+            # A failing ssh -G stops the run
+            single = write_config("single.toml",
+                                  key_entry("hpc", "hpc", "/scratch/shared/campaign"))
+            outcome = with_stub_binaries(; g_exit_code=255, stdout_text=markers) do _
+                return invoke_driver(["probe"], single)
+            end
+            @test outcome.exitcode == 1
+            @test occursin("could not evaluate its configuration", outcome.output)
+
+            # A jump host from the ssh configuration is reported for a password target
+            scenario = joinpath(dir, "scenario.toml")
+            write(scenario, SCENARIO_CONFIG)
+            chmod(scenario, 0o600)
+            plain = with_stub_binaries(; stdout_text=markers) do _
+                return invoke_driver(["probe"], scenario)
+            end
+            routed = with_stub_binaries(; stdout_text=markers,
+                                        g_proxyjump="admin@gw.example.org") do _
+                return invoke_driver(["probe"], scenario)
+            end
+            @test routed.exitcode == plain.exitcode
+            @test occursin("jump host", routed.output)
+            @test !occursin("jump host", plain.output)
+
+            # The user of a key target without one comes from ssh -G
+            homeless = write_config("homeless.toml",
+                                    key_entry("hpc", "hpc", "/home/stubuser"))
+            outcome = with_stub_binaries(; stdout_text=markers) do _
+                return invoke_driver(["clean", "--yes"], homeless)
+            end
+            @test outcome.exitcode == 1
+            @test occursin("protected path", outcome.output)
+
+            # A push of a key target claims the directory and transfers without sshpass
+            pushed = with_stub_binaries(; stdout_text=markers) do args_file
+                outcome = invoke_driver(["push"], single)
+                return (; outcome, lines=recorded_invocations(args_file),
+                        queries=recorded_config_queries(args_file))
+            end
+            @test pushed.outcome.exitcode == 0
+            @test !isempty(pushed.queries)
+            @test !any(occursin("sshpass", line) for line in pushed.lines)
+            @test !any(startswith("-d 0 "), pushed.lines)
+            @test any(startswith(line, "-n ") && occursin(".sshdatabridge-target", line)
+                      for line in pushed.lines)
+            @test any(startswith("-a --partial"), pushed.lines)
         end
     end
 end

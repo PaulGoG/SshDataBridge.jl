@@ -63,20 +63,44 @@ end
 """
     run_captured(cmd::Cmd)
 
-Run a command that needs no credentials, capturing standard output and standard error,
-both read to end-of-file as in [`run_authenticated`](@ref). Returns
-`(; exitcode, stdout, stderr)`; a non-zero exit status is reported, not thrown, and a
-signal-terminated child reports `128 + signal`.
+Run a command that needs no credentials, with standard input from `devnull`, capturing
+standard output and standard error, both read to end-of-file as in
+[`run_authenticated`](@ref). Returns `(; exitcode, stdout, stderr)` and throws nothing: a
+non-zero exit status is reported, a signal-terminated child reports `128 + signal`, and a
+command that cannot be started reports `-1` with the reason in `stderr`.
 """
 function run_captured(cmd::Cmd)
     out = Pipe()
     err = Pipe()
-    process = run(pipeline(ignorestatus(cmd); stdout=out, stderr=err); wait=false)
+    process = try
+        run(pipeline(ignorestatus(cmd); stdin=devnull, stdout=out, stderr=err); wait=false)
+    catch e
+        e isa Base.IOError || rethrow()
+        close(out)
+        close(err)
+        return (; exitcode=-1, stdout="",
+                stderr="could not start $(first(cmd.exec)): $(sprint(showerror, e))")
+    end
     stdout_reader = drain(out)
     stderr_reader = drain(err)
     wait(process)
     return (; exitcode=exit_status(process), stdout=fetch(stdout_reader)::String,
             stderr=fetch(stderr_reader)::String)
+end
+
+"""
+    run_target(cmd::Cmd, target::BridgeTarget)
+
+Run a command of `target` and return `(; exitcode, stdout, stderr)`; the one place that
+decides how the command receives its credential. A password target runs through
+[`run_authenticated`](@ref), which feeds the password to `sshpass`; a key target runs
+through [`run_captured`](@ref), ssh authenticating without a secret from this package.
+"""
+function run_target(cmd::Cmd, target::BridgeTarget)
+    if target.auth == :password
+        return run_authenticated(cmd, target.password::String)
+    end
+    return run_captured(cmd)
 end
 
 """

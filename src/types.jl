@@ -40,10 +40,19 @@ A remote compute node and the layout of its campaign directory.
 
 # Fields
 - `name::String`: unique label; it also names the local harvest directory.
-- `host::String`: DNS hostname, IPv4 address, or IPv6 literal.
-- `port::Int`: SSH daemon port in `1:65535`.
-- `user::String`: remote user name.
-- `password::String`: remote password; never printed by `show`.
+- `host::String`: DNS hostname, ssh_config `Host` alias, IPv4 address, or IPv6 literal.
+- `port::Union{Nothing, Int}`: SSH daemon port in `1:65535`; `nothing` leaves it to
+  ~/.ssh/config.
+- `user::Union{Nothing, String}`: remote user name; `nothing` leaves it to ~/.ssh/config
+  or the local account name.
+- `auth::Symbol`: `:password` (the password is fed to `sshpass`) or `:key` (no secret;
+  ssh authenticates by agent, identity file, certificate, or an existing master
+  connection, as ~/.ssh/config provides).
+- `password::Union{Nothing, String}`: remote password of a password target, `nothing`
+  for a key target; never printed by `show`.
+- `identity_file::Union{Nothing, String}`: private key of a key target, stored after
+  `expanduser` (`-i <path> -o IdentitiesOnly=yes`).
+- `proxy_jump::Union{Nothing, String}`: jump-host specification of a key target (`-J`).
 - `remote_dir::String`: absolute base directory of the campaign on the remote host.
 - `output_subdir::String`: output directory relative to `remote_dir` (default `"output"`).
 - `strict_host_key_checking::Union{String, Nothing}`: optional host key policy override.
@@ -52,32 +61,61 @@ A remote compute node and the layout of its campaign directory.
 and trailing slashes are removed on construction, so that every command names the
 directory in one spelling. An `output_subdir` that is `.` itself stays `.`, the base
 directory.
+
+# Constructors
+    BridgeTarget(name, host; remote_dir, port=nothing, user=nothing, auth=:password,
+                 password=nothing, identity_file=nothing, proxy_jump=nothing,
+                 output_subdir="output", strict_host_key_checking=nothing)
+    BridgeTarget(name, host, port, user, password, remote_dir, output_subdir="output",
+                 strict_host_key_checking=nothing)
+
+The positional form builds a password target. Every field is checked by
+[`validate_bridge_target_fields`](@ref).
+
+# Examples
+```julia
+BridgeTarget("node01", "node01.cluster.example", 22, "researcher", "secret",
+             "/home/researcher/campaign")
+BridgeTarget("cluster", "hpc"; auth=:key, remote_dir="/scratch/researcher/campaign")
+```
 """
 struct BridgeTarget
     name::String
     host::String
-    port::Int
-    user::String
-    password::String
+    port::Union{Nothing, Int}
+    user::Union{Nothing, String}
+    auth::Symbol
+    password::Union{Nothing, String}
+    identity_file::Union{Nothing, String}
+    proxy_jump::Union{Nothing, String}
     remote_dir::String
     output_subdir::String
     strict_host_key_checking::Union{String, Nothing}
 
     function BridgeTarget(name::AbstractString,
-                          host::AbstractString,
-                          port::Integer,
-                          user::AbstractString,
-                          password::AbstractString,
+                          host::AbstractString;
                           remote_dir::AbstractString,
+                          port::Union{Nothing, Integer}=nothing,
+                          user::Union{Nothing, AbstractString}=nothing,
+                          auth::Union{Symbol, AbstractString}=:password,
+                          password::Union{Nothing, AbstractString}=nothing,
+                          identity_file::Union{Nothing, AbstractString}=nothing,
+                          proxy_jump::Union{Nothing, AbstractString}=nothing,
                           output_subdir::AbstractString="output",
-                          strict_host_key_checking::Union{AbstractString, Nothing}=nothing)
-        validate_bridge_target_fields(name, host, port, user, password, remote_dir,
-                                      output_subdir, strict_host_key_checking)
+                          strict_host_key_checking::Union{Nothing, AbstractString}=nothing)
+        method = Symbol(auth)
+        key_path = identity_file === nothing ? nothing : expanduser(identity_file)
+        validate_bridge_target_fields(name, host, port, user, method, password, key_path,
+                                      proxy_jump, remote_dir, output_subdir,
+                                      strict_host_key_checking)
         return new(String(name),
                    String(host),
-                   Int(port),
-                   String(user),
-                   String(password),
+                   port === nothing ? nothing : Int(port),
+                   user === nothing ? nothing : String(user),
+                   method,
+                   password === nothing ? nothing : String(password),
+                   key_path === nothing ? nothing : String(key_path),
+                   proxy_jump === nothing ? nothing : String(proxy_jump),
                    String(rstrip(normpath(remote_dir), '/')),
                    String(rstrip(normpath(output_subdir), '/')),
                    strict_host_key_checking === nothing ? nothing :
@@ -85,10 +123,45 @@ struct BridgeTarget
     end
 end
 
+function BridgeTarget(name::AbstractString,
+                      host::AbstractString,
+                      port::Integer,
+                      user::AbstractString,
+                      password::AbstractString,
+                      remote_dir::AbstractString,
+                      output_subdir::AbstractString="output",
+                      strict_host_key_checking::Union{AbstractString, Nothing}=nothing)
+    return BridgeTarget(name, host; remote_dir=remote_dir, port=port, user=user,
+                        auth=:password, password=password, output_subdir=output_subdir,
+                        strict_host_key_checking=strict_host_key_checking)
+end
+
+"""
+    target_address(host::AbstractString, port::Union{Nothing, Integer},
+                   user::Union{Nothing, AbstractString})::String
+    target_address(target::BridgeTarget)::String
+
+Endpoint of a target as configured, for display: `[user@]host[:port]`, each optional part
+omitted when ~/.ssh/config decides it.
+"""
+function target_address(host::AbstractString, port::Union{Nothing, Integer},
+                        user::Union{Nothing, AbstractString})::String
+    return (user === nothing ? "" : user * "@") * host *
+           (port === nothing ? "" : ":$(port)")
+end
+
+target_address(target::BridgeTarget)::String = target_address(target.host, target.port,
+                                                              target.user)
+
 function Base.show(io::IO, target::BridgeTarget)
-    print(io, "BridgeTarget(", repr(target.name), ", ", target.user, "@", target.host, ":",
-          target.port, ", remote_dir = ", repr(target.remote_dir), ", output_subdir = ",
-          repr(target.output_subdir), ", password = <redacted>)")
+    print(io, "BridgeTarget(", repr(target.name), ", ", target_address(target), ", auth = ",
+          target.auth, ", remote_dir = ", repr(target.remote_dir), ", output_subdir = ",
+          repr(target.output_subdir))
+    target.identity_file === nothing ||
+        print(io, ", identity_file = ", repr(target.identity_file))
+    target.proxy_jump === nothing || print(io, ", proxy_jump = ", repr(target.proxy_jump))
+    target.auth == :password && print(io, ", password = <redacted>")
+    print(io, ")")
     return nothing
 end
 
@@ -226,11 +299,15 @@ same directory would overwrite each other's results. Two targets on the same hos
 port must not have overlapping remote directories, equal or one inside the other,
 because a project purge of one would remove the output of the other before it is
 harvested, and both would be deployed into one tree. The rule does not depend on
-`purge_scope`. Hosts are compared as [`node_key`](@ref) describes, IP addresses by value.
-The comparison concerns hosts, not storage: nodes that mount one filesystem, two names or
-addresses of one machine, and a symbolic link or bind mount on the node are not
-recognized. The rule is checked here only: the functions that take a single target act on
-the target they are given.
+`purge_scope`. Hosts are compared as [`node_key`](@ref) describes, IP addresses by value,
+with port 22 for a target whose port ~/.ssh/config decides. This is the lexical check on
+the configured values; it concerns hosts, not storage, and does not recognize an
+ssh_config alias and the name it stands for, two names or addresses of one machine,
+nodes that mount one filesystem, or a symbolic link or bind mount on the node. The
+command-line driver repeats it on the configuration that ssh evaluates for every target
+(see [`check_endpoint_overlaps`](@ref)), and the ownership marker (see
+[`claim_script`](@ref), [`purge_script`](@ref)) covers nodes that share storage. The
+functions that take a single target act on the target they are given.
 """
 struct BridgeConfig
     globals::GlobalOptions
@@ -253,7 +330,8 @@ struct BridgeConfig
         for index in eachindex(targets), other_index in (index + 1):lastindex(targets)
             target = targets[index]
             other = targets[other_index]
-            if node_key(target.host, target.port) == node_key(other.host, other.port) &&
+            if node_key(target.host, something(target.port, DEFAULT_PORT)) ==
+               node_key(other.host, something(other.port, DEFAULT_PORT)) &&
                paths_overlap(target.remote_dir, other.remote_dir)
                 throw(ArgumentError("Targets '$(target.name)' and '$(other.name)' are on the same host and port and their remote directories overlap ('$(target.remote_dir)' and '$(other.remote_dir)'): the purge of one would remove the output of the other before it is harvested. Use one target per project directory."))
             end

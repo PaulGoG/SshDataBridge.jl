@@ -136,8 +136,7 @@ command read `unknown` when it failed.
 function format_probe_table(io::IO, results::Vector{ProbeResult})
     println(io, "\nprobe: ", count_targets(length(results)), "\n")
     for r in results
-        println(io, r.target.name, "  ", r.target.user, "@", r.target.host, ":",
-                r.target.port)
+        println(io, r.target.name, "  ", target_address(r.target))
         println(io, "  SSH reachable:     ", r.ssh_ok ? "yes" : "no")
         println(io, "  Remote rsync:      ",
                 r.ssh_ok ? (r.rsync_ok ? "yes" : "no") : "unknown")
@@ -244,6 +243,24 @@ function run_driver(args::AbstractVector{<:AbstractString}, io::IO, err::IO)::In
         return 1
     end
 
+    endpoints = try
+        resolved = resolve_endpoints(config)
+        check_endpoint_overlaps(config.targets, resolved)
+        resolved
+    catch e
+        e isa Union{ArgumentError, MissingBinaryError} || rethrow()
+        println(err, "Error: ", e isa ArgumentError ? e.msg : sprint(showerror, e))
+        return 1
+    end
+    for (target, endpoint) in zip(config.targets, endpoints)
+        if target.auth == :password &&
+           (endpoint.proxy_jump !== nothing || endpoint.proxy_command !== nothing)
+            @warn "Password target reached through a jump host: if the jump host asks for a password, sshpass gives it this target's password" target=target.name
+        end
+    end
+    endpoints_by_name = Dict(target.name => endpoint
+                             for (target, endpoint) in zip(config.targets, endpoints))
+
     if !isempty(options.targets)
         known = String[t.name for t in config.targets]
         unknown = filter(name -> !(name in known), unique(options.targets))
@@ -273,7 +290,7 @@ function run_driver(args::AbstractVector{<:AbstractString}, io::IO, err::IO)::In
         for target in config.targets
             try
                 validate_remote_path_safety(purge_path(target, config.pull.purge_scope),
-                                            target.user)
+                                            endpoints_by_name[target.name].user)
             catch e
                 e isa ArgumentError || rethrow()
                 println(err, "Error: target '$(target.name)': ", e.msg)

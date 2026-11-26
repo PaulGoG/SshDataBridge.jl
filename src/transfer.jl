@@ -3,10 +3,14 @@
 
 Construct the remote-shell string passed to `rsync -e`, with the options of
 [`ssh_options`](@ref); the keepalive among them ends a stalled transfer with a non-zero
-exit status instead of blocking it.
+exit status instead of blocking it. rsync splits the string on spaces and honours
+quotes, so every word that contains a space or a `"` is wrapped in single quotes; a
+single quote cannot occur, since validation refuses it in `identity_file`.
 """
 function build_ssh_rsh_string(target::BridgeTarget, globals::GlobalOptions)::String
-    return join(String["ssh", ssh_options(target, globals)...], ' ')
+    words = String["ssh", ssh_options(target, globals)...]
+    return join((occursin(' ', word) || occursin('"', word) ? "'" * word * "'" : word
+                 for word in words), ' ')
 end
 
 """
@@ -22,15 +26,16 @@ end
 """
     rsync_base_arguments(globals::GlobalOptions)::Vector{String}
 
-Leading arguments shared by every `rsync` invocation: the `sshpass` prefix, the archive
-and resumption flags, `-s` (`--secluded-args`), and the optional compression and
-bandwidth settings. With `-s` the remote path reaches the remote `rsync` through the
-protocol and not through the remote shell, which would split or expand it under rsync
-older than 3.2.4 or with `RSYNC_OLD_ARGS` set. `-v` is not among them: a transfer records
-its file list in a log file instead, see [`transfer_log_path`](@ref).
+Leading arguments shared by every `rsync` invocation: `rsync`, the archive and
+resumption flags, `-s` (`--secluded-args`), and the optional compression and bandwidth
+settings. [`target_command`](@ref) adds the `sshpass` prefix of a password target. With
+`-s` the remote path reaches the remote `rsync` through the protocol and not through the
+remote shell, which would split or expand it under rsync older than 3.2.4 or with
+`RSYNC_OLD_ARGS` set. `-v` is not among them: a transfer records its file list in a log
+file instead, see [`transfer_log_path`](@ref).
 """
 function rsync_base_arguments(globals::GlobalOptions)::Vector{String}
-    args = String["sshpass", "-d", "0", "rsync", "-a", "--partial", "-s"]
+    args = String["rsync", "-a", "--partial", "-s"]
     globals.compress && push!(args, "-z")
     globals.bandwidth_limit > 0 && push!(args, "--bwlimit=$(globals.bandwidth_limit)")
     return args
@@ -90,10 +95,10 @@ end
                        log_file::Union{AbstractString, Nothing}=nothing)::Cmd
 
 Construct the `rsync` invocation that deploys the local source tree to `target`, with
-the filter rules of [`push_filter_arguments`](@ref). The password is not part of the
-command; [`run_authenticated`](@ref) supplies it. With
-`log_file`, `rsync` appends the list of transferred files to that file, see
-[`transfer_log_path`](@ref).
+the filter rules of [`push_filter_arguments`](@ref), wrapped by
+[`target_command`](@ref). The password of a password target is not part of the command;
+[`run_authenticated`](@ref) supplies it. With `log_file`, `rsync` appends the list of
+transferred files to that file, see [`transfer_log_path`](@ref).
 """
 function build_push_command(target::BridgeTarget, globals::GlobalOptions,
                             push_opts::PushOptions;
@@ -104,23 +109,27 @@ function build_push_command(target::BridgeTarget, globals::GlobalOptions,
     append!(args, push_filter_arguments(push_opts))
     source = endswith(push_opts.local_source_dir, '/') ? push_opts.local_source_dir :
              push_opts.local_source_dir * "/"
-    destination = "$(target.user)@$(rsync_host(target.host)):$(target.remote_dir)/"
+    destination = "$(target_label(rsync_host(target.host), target.user)):$(target.remote_dir)/"
     push!(args, source, destination)
-    return Cmd(args)
+    return target_command(target, args)
 end
 
 """
     pull_filter_arguments(pull_opts::PullOptions)::Vector{String}
 
-`rsync` filter rules of a harvest. Exclude patterns come first and therefore take
-precedence. When include patterns are given, the harvest is narrowed to files matching
-one of them: every directory is entered (`--include=*/`), the include patterns follow, a
-final `--exclude=*` drops everything else, and `--prune-empty-dirs` omits directories
-left without files. Include rules alone would not narrow anything, because `rsync`
-transfers every file that no rule excludes.
+`rsync` filter rules of a harvest. The ownership marker at the root of the transfer
+(see [`claim_script`](@ref)) is excluded first, so that it is never harvested nor
+compared by the verification pass; with `output_subdir = "."` the output directory is the
+project directory. Exclude patterns come next and therefore take precedence. When include
+patterns are given, the harvest is narrowed to files matching one of them: every
+directory is entered (`--include=*/`), the include patterns follow, a final
+`--exclude=*` drops everything else, and `--prune-empty-dirs` omits directories left
+without files. Include rules alone would not narrow anything, because `rsync` transfers
+every file that no rule excludes.
 """
 function pull_filter_arguments(pull_opts::PullOptions)::Vector{String}
-    args = String["--exclude=$(pattern)" for pattern in pull_opts.excludes]
+    args = String["--exclude=/$(OWNERSHIP_MARKER)"]
+    append!(args, ["--exclude=$(pattern)" for pattern in pull_opts.excludes])
     isempty(pull_opts.includes) && return args
     push!(args, "--include=*/")
     for pattern in pull_opts.includes
@@ -136,19 +145,20 @@ end
                        log_file::Union{AbstractString, Nothing}=nothing)::Cmd
 
 Construct the `rsync` invocation that retrieves the remote output directory of `target`
-into `local_target_dir`, with the filter rules of [`pull_filter_arguments`](@ref). The
-password is not part of the command; [`run_authenticated`](@ref) supplies it. With
-`log_file`, `rsync` appends the list of transferred files to that file, see
-[`transfer_log_path`](@ref).
+into `local_target_dir`, with the filter rules of [`pull_filter_arguments`](@ref),
+wrapped by [`target_command`](@ref). The password of a password target is not part of
+the command; [`run_authenticated`](@ref) supplies it. With `log_file`, `rsync` appends
+the list of transferred files to that file, see [`transfer_log_path`](@ref).
 """
 function build_pull_command(target::BridgeTarget, globals::GlobalOptions,
                             pull_opts::PullOptions, local_target_dir::AbstractString;
                             log_file::Union{AbstractString, Nothing}=nothing)::Cmd
     args = rsync_base_arguments(globals)
     append!(args, transfer_arguments(log_file))
-    return Cmd(append!(args,
-                       pull_endpoint_arguments(target, globals, pull_opts,
-                                               local_target_dir)))
+    return target_command(target,
+                          append!(args,
+                                  pull_endpoint_arguments(target, globals, pull_opts,
+                                                          local_target_dir)))
 end
 
 """
@@ -162,7 +172,7 @@ function pull_endpoint_arguments(target::BridgeTarget, globals::GlobalOptions,
                                  local_target_dir::AbstractString)::Vector{String}
     args = String["-e", build_ssh_rsh_string(target, globals)]
     append!(args, pull_filter_arguments(pull_opts))
-    source = "$(target.user)@$(rsync_host(target.host)):$(remote_output_directory(target))/"
+    source = "$(target_label(rsync_host(target.host), target.user)):$(remote_output_directory(target))/"
     destination = endswith(local_target_dir, '/') ? String(local_target_dir) :
                   local_target_dir * "/"
     return push!(args, source, destination)
@@ -184,9 +194,10 @@ function build_verification_command(target::BridgeTarget, globals::GlobalOptions
                                     local_target_dir::AbstractString)::Cmd
     args = rsync_base_arguments(globals)
     push!(args, "--dry-run", "--itemize-changes")
-    return Cmd(append!(args,
-                       pull_endpoint_arguments(target, globals, pull_opts,
-                                               local_target_dir)))
+    return target_command(target,
+                          append!(args,
+                                  pull_endpoint_arguments(target, globals, pull_opts,
+                                                          local_target_dir)))
 end
 
 """
@@ -202,7 +213,7 @@ harvest and is empty otherwise.
 function verify_harvest(target::BridgeTarget, config::BridgeConfig,
                         local_target_dir::AbstractString)
     cmd = build_verification_command(target, config.globals, config.pull, local_target_dir)
-    outcome = run_authenticated(cmd, target.password)
+    outcome = run_target(cmd, target)
     if outcome.exitcode != 0
         return (; complete=false,
                 detail="the verification pass exited with code $(outcome.exitcode): $(strip(outcome.stderr))")
@@ -311,9 +322,11 @@ end
     push_target(target::BridgeTarget, config::BridgeConfig; dry_run::Bool=false)::TransferResult
 
 Deploy the local source tree to one target. The log directory (`local_destination_root`)
-is created first, then `remote_dir` on the node, then `rsync` runs; the first step that
-fails ends the push with a failed result. On success the message gives the number of
-files and bytes transferred and the log path.
+is created first, then `remote_dir` on the node is created and claimed for the target
+(see [`claim_remote_directory`](@ref)), then `rsync` runs; the first step that fails ends
+the push with a failed result. A directory that another target has claimed refuses the
+push. On success the message gives the number of files and bytes transferred and the log
+path.
 """
 function push_target(target::BridgeTarget, config::BridgeConfig;
                      dry_run::Bool=false)::TransferResult
@@ -333,13 +346,15 @@ function push_target(target::BridgeTarget, config::BridgeConfig;
                               "Could not create the log directory: $(sprint(showerror, err))")
     end
 
-    directory = ensure_remote_directory(target, config.globals, target.remote_dir)
-    if !directory.success
-        return TransferResult(target, :push, false, directory.exitcode, time() - t_start,
-                              "Remote directory creation failed (exit code $(directory.exitcode)): $(strip(directory.stderr))")
+    claim = claim_remote_directory(target, config.globals)
+    if !claim.success
+        message = claim.exitcode == 97 ? "Push refused: $(strip(claim.stderr))" :
+                  "Remote directory claim failed (exit code $(claim.exitcode)): $(strip(claim.stderr))"
+        return TransferResult(target, :push, false, claim.exitcode, time() - t_start,
+                              message)
     end
 
-    outcome = run_authenticated(cmd, target.password)
+    outcome = run_target(cmd, target)
     duration = time() - t_start
     success = outcome.exitcode == 0
     message = success ? transfer_summary("Deployed", duration, outcome.stdout, log_file) :
@@ -391,7 +406,7 @@ function pull_target(target::BridgeTarget, config::BridgeConfig; dry_run::Bool=f
     end
     cmd = build_pull_command(target, config.globals, config.pull, dest_dir;
                              log_file=log_file)
-    outcome = run_authenticated(cmd, target.password)
+    outcome = run_target(cmd, target)
     duration = time() - t_start
     if outcome.exitcode != 0
         return TransferResult(target, :pull, false, outcome.exitcode, duration,
@@ -453,7 +468,7 @@ set, it must also be a clean git working tree. Both checks run in dry-run mode a
 """
 function push_all_targets(config::BridgeConfig;
                           dry_run::Bool=false)::Vector{TransferResult}
-    dry_run || check_local_binaries()
+    dry_run || check_local_binaries(config.targets)
     if !isdir(config.push.local_source_dir)
         throw(ArgumentError("Push parameter 'local_source_dir' is not an existing directory: '$(config.push.local_source_dir)'."))
     end
@@ -475,7 +490,7 @@ function pull_all_targets(config::BridgeConfig; dry_run::Bool=false,
     if clean_remote && !isempty(config.pull.includes)
         throw(ArgumentError("A purge cannot follow a harvest narrowed by '[pull].includes': files left behind by the filter would be destroyed."))
     end
-    dry_run || check_local_binaries()
+    dry_run || check_local_binaries(config.targets)
     @info "Pulling from all targets" total_targets=length(config.targets) destination=config.pull.local_destination_root clean_remote=clean_remote dry_run=dry_run
     return map_targets(target -> pull_target(target, config; dry_run=dry_run,
                                              clean_remote=clean_remote), config.targets,
