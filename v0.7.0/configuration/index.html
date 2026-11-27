@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><meta name="referrer" content="no-referrer"/><title>Configuration · SshDataBridge.jl</title><meta name="title" content="Configuration · SshDataBridge.jl"/><meta property="og:title" content="Configuration · SshDataBridge.jl"/><meta property="twitter:title" content="Configuration · SshDataBridge.jl"/><meta name="description" content="Documentation for SshDataBridge.jl."/><meta property="og:description" content="Documentation for SshDataBridge.jl."/><meta property="twitter:description" content="Documentation for SshDataBridge.jl."/><meta property="og:url" content="https://PaulGoG.github.io/SshDataBridge.jl/configuration/"/><meta property="twitter:url" content="https://PaulGoG.github.io/SshDataBridge.jl/configuration/"/><link rel="canonical" href="https://PaulGoG.github.io/SshDataBridge.jl/configuration/"/><script data-outdated-warner src="../assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.63.2/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.8/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL=".."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="../assets/documenter.js"></script><script src="../search_index.js"></script><script src="../siteinfo.js"></script><script src="../../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-mocha.css" data-theme-name="catppuccin-mocha"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-macchiato.css" data-theme-name="catppuccin-macchiato"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-frappe.css" data-theme-name="catppuccin-frappe"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-latte.css" data-theme-name="catppuccin-latte"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="../assets/themeswap.js"></script></head><body><div id="documenter"><nav class="docs-sidebar"><div class="docs-package-name"><span class="docs-autofit"><a href="../">SshDataBridge.jl</a></span></div><button class="docs-search-query input is-rounded is-small is-clickable my-2 mx-auto py-1 px-2" id="documenter-search-query">Search docs (Ctrl + /)</button><ul class="docs-menu"><li><a class="tocitem" href="../">Home</a></li><li class="is-active"><a class="tocitem" href>Configuration</a><ul class="internal"><li><a class="tocitem" href="#Template"><span>Template</span></a></li></ul></li><li><a class="tocitem" href="../api/">Library API</a></li><li><a class="tocitem" href="../internals/">Internals</a></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><a class="docs-sidebar-button docs-navbar-link fa-solid fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a><nav class="breadcrumb"><ul class="is-hidden-mobile"><li class="is-active"><a href>Configuration</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>Configuration</a></li></ul></nav><div class="docs-right"><a class="docs-navbar-link" href="https://github.com/PaulGoG/SshDataBridge.jl" title="View the repository on GitHub"><span class="docs-icon fa-brands"></span><span class="docs-label is-hidden-touch">GitHub</span></a><a class="docs-navbar-link" href="https://github.com/PaulGoG/SshDataBridge.jl/blob/main/docs/src/configuration.md" title="Edit source on GitHub"><span class="docs-icon fa-solid"></span></a><a class="docs-settings-button docs-navbar-link fa-solid fa-gear" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-article-toggle-button fa-solid fa-chevron-up" id="documenter-article-toggle-button" href="javascript:;" title="Collapse all docstrings"></a></div></header><article class="content" id="documenter-page"><h1 id="Configuration"><a class="docs-heading-anchor" href="#Configuration">Configuration</a><a id="Configuration-1"></a><a class="docs-heading-anchor-permalink" href="#Configuration" title="Permalink"></a></h1><p>One TOML file describes a campaign. It may hold passwords in plain text, so <a href="../api/#SshDataBridge.load_config"><code>load_config</code></a> refuses a file that grants any permission to group or others. Create it from the template:</p><pre><code class="language-bash hljs">install -m 600 config.example.toml config.toml</code></pre><p>Unknown keys and values of the wrong type are rejected before any node is contacted, and the message names the key. Relative local paths are resolved against the directory of the configuration file, and a leading <code>~</code> expands to the home directory. <code>[push].local_source_dir</code>, <code>[pull].local_destination_root</code>, and the target keys <code>name</code>, <code>host</code>, and <code>remote_dir</code> are mandatory, and <code>password</code> for a password target; every other key has a default. <code>port</code> and <code>user</code> may be left out, and ~/.ssh/config then decides; <code>host</code> may be one of its <code>Host</code> aliases.</p><p><code>auth = &quot;password&quot;</code> (the default) feeds the target&#39;s <code>password</code> to <code>sshpass</code>. <code>auth = &quot;key&quot;</code> supplies no secret: ssh authenticates with the agent, an identity file, a certificate, or an open master connection, and never prompts (<code>BatchMode=yes</code>, and for jump hosts an askpass program of the package that ends the ssh asking). A key target may name <code>identity_file</code>, passed as <code>-i &lt;path&gt; -o IdentitiesOnly=yes</code>, and <code>proxy_jump</code>, passed as <code>ssh -J</code>; a password target accepts neither, except <code>proxy_jump = &quot;none&quot;</code> (any letter case), which connects any target directly (<code>-o ProxyCommand=none</code>). Key targets need OpenSSH 8.4 or newer on the workstation, and a <code>TMPDIR</code> from which the askpass program can be executed (not mounted <code>noexec</code>). Options given on the ssh command line apply to the target, not to its jump hosts: <code>strict_host_key_checking</code>, <code>connect_timeout</code>, and <code>identity_file</code> do not reach a jump host, whose key, authentication, and timeout follow its own entry in <code>~/.ssh/config</code>. A session through an existing master connection is kept alive by the master&#39;s own <code>ServerAliveInterval</code>, not by <code>server_alive_interval</code>.</p><p><code>remote_dir</code> and <code>output_subdir</code> must not contain <code>..</code> segments or the characters <code>*</code>, <code>?</code>, <code>[</code>, <code>]</code>, which rsync would expand on the node. Two targets on the same host and port must not share a <code>remote_dir</code> or nest one inside the other, whatever the <code>purge_scope</code>: a project purge of one would remove the output of the other before it is harvested, and both would be deployed into one tree. <a href="../api/#SshDataBridge.BridgeConfig"><code>BridgeConfig</code></a> checks the configured hosts; the command-line driver checks again, a dry run included, on the host name and port that <code>ssh -G</code> evaluates for every configured target as a command session (<a href="../internals/#SshDataBridge.check_endpoint_overlaps-Tuple{AbstractVector{BridgeTarget}, AbstractVector{SshDataBridge.SshEndpoint}}"><code>check_endpoint_overlaps</code></a>). Host names are compared without case, IP addresses by the value the C library reads, as ssh does. Nodes that mount one filesystem, such as a shared <code>/home</code> on a cluster, are caught by the ownership marker that a push writes into <code>remote_dir</code> (<a href="../internals/#SshDataBridge.claim_script-Tuple{AbstractString, AbstractString}"><code>claim_script</code></a>): a push into a directory claimed by another target, or nested in or containing one, is refused (of two nested claims made at the same moment, at least one), and so is a purge that would remove another target&#39;s tree (<a href="../internals/#SshDataBridge.purge_script-Tuple{AbstractString, AbstractString}"><code>purge_script</code></a>). A numeric <code>host</code> with a field in octal or hexadecimal notation (<code>192.0.2.012</code>, <code>0xc0.0.2.10</code>) is refused, and so is one that the C library does not read as an address (<code>192.168.1.256</code>, <code>2001:db8:10</code>).</p><h2 id="Template"><a class="docs-heading-anchor" href="#Template">Template</a><a id="Template-1"></a><a class="docs-heading-anchor-permalink" href="#Template" title="Permalink"></a></h2><p><code>config.example.toml</code> from the repository root lists every key with its constraints:</p><pre><code class="language-toml hljs"># SshDataBridge configuration template. Install as config.toml with mode 600 and edit.
+
+[globals]
+# OpenSSH ConnectTimeout
+connect_timeout = 10  # integer &gt; 0; units: s
+
+# Host-key verification policy
+strict_host_key_checking = &quot;accept-new&quot;  # one of: &quot;accept-new&quot; | &quot;yes&quot; | &quot;no&quot;
+
+# rsync compression (-z)
+compress = true
+
+# rsync bandwidth limit per transfer
+bandwidth_limit = 0  # integer &gt;= 0; units: KiB/s; 0 = unlimited
+
+# Server silence before ssh sends a keepalive request (ServerAliveInterval)
+server_alive_interval = 15  # integer &gt;= 0; units: s; 0 = ssh client configuration decides
+
+# Unanswered keepalive requests before ssh disconnects (ServerAliveCountMax)
+server_alive_count_max = 3  # integer &gt;= 1
+
+[push]
+# Local source directory deployed to every target (mandatory)
+local_source_dir = &quot;~/projects/sim_batch_01&quot;  # path relative to this config file or absolute; &#39;~&#39; expands
+
+# rsync exclude patterns for push (the default list)
+excludes = [
+    &quot;.git&quot;,
+    &quot;.github&quot;,
+    &quot;.vscode&quot;,
+    &quot;*.swp&quot;,
+    &quot;*~&quot;,
+]
+
+# rsync include patterns applied before the .gitignore filter: deploy paths the project ignores
+includes = []  # for example [&quot;/Manifest.toml&quot;] when every node runs the same Julia version
+
+# Apply the .gitignore rules of the source tree as rsync excludes (no &#39;!&#39; negations)
+use_gitignore = true
+
+# Refuse to push from a working tree with uncommitted changes below local_source_dir
+require_clean_git = false
+
+[pull]
+# Local destination root: one subdirectory per target, plus the rsync logs (mandatory)
+local_destination_root = &quot;~/campaigns/sim_batch_01/harvest&quot;  # path relative to this config file or absolute; &#39;~&#39; expands
+
+# Output directory relative to remote_dir, for targets that do not set their own
+output_subdir = &quot;output&quot;  # relative path without &#39;..&#39; segments or &#39;*&#39;, &#39;?&#39;, &#39;[&#39;, &#39;]&#39;
+
+# Harvest only files matching these patterns (empty = all files); excludes take precedence; not combinable with a purge
+includes = []
+
+# rsync exclude patterns for pull (the default list)
+excludes = [
+    &quot;*.tmp&quot;,
+    &quot;*~&quot;,
+]
+
+# Handling of an existing local directory of a target
+collision_strategy = &quot;resume&quot;  # one of: &quot;resume&quot; | &quot;backup&quot; | &quot;abort&quot;
+
+# Purge the remote directory after a verified harvest (requires --yes on the CLI)
+clean_remote_after_pull = false
+
+# Remote directory removed by a purge
+purge_scope = &quot;project&quot;  # one of: &quot;project&quot; | &quot;output&quot;
+
+[[targets]]
+# Unique label (mandatory); names the local harvest directory and the rsync logs
+name = &quot;Cluster-Node-01&quot;  # starts with a letter or digit; letters, digits, &#39;.&#39;, &#39;_&#39;, &#39;-&#39;; at most 64 characters
+
+# Hostname, ssh_config Host alias, IPv4 address in decimal fields, or IPv6 literal without brackets
+host = &quot;192.168.1.100&quot;
+
+# SSH daemon port (optional; when absent, ~/.ssh/config or 22)
+port = 22  # integer in [1, 65535]
+
+# Remote user name (optional; when absent, ~/.ssh/config or the local account name)
+user = &quot;scientist&quot;  # letter or underscore, then letters, digits, &#39;.&#39;, &#39;_&#39;, &#39;-&#39;; at most 32 characters
+
+# Authentication method (optional; default &quot;password&quot;)
+auth = &quot;password&quot;  # one of: &quot;password&quot; | &quot;key&quot;
+
+# Authentication password (password targets only)
+password = &quot;example_password_1&quot;  # non-empty; no control characters
+
+# Base directory of the campaign on the node; no other target on the same host and port may use it or a directory inside it
+remote_dir = &quot;/home/scientist/campaigns/sim_batch_01&quot;  # absolute path without &#39;..&#39; segments or &#39;*&#39;, &#39;?&#39;, &#39;[&#39;, &#39;]&#39;
+
+# Remote output subdirectory relative to remote_dir (optional, defaults to [pull].output_subdir)
+output_subdir = &quot;output&quot;  # relative path without &#39;..&#39; segments or &#39;*&#39;, &#39;?&#39;, &#39;[&#39;, &#39;]&#39;
+
+# Host-key policy override (optional)
+strict_host_key_checking = &quot;accept-new&quot;  # one of: &quot;accept-new&quot; | &quot;yes&quot; | &quot;no&quot;
+
+[[targets]]
+name = &quot;Cluster-Node-02&quot;
+host = &quot;192.168.1.101&quot;
+port = 2222
+user = &quot;engineer&quot;
+password = &quot;example_password_2&quot;
+remote_dir = &quot;/home/engineer/campaigns/sim_batch_01&quot;
+output_subdir = &quot;results&quot;
+
+[[targets]]
+name = &quot;Cluster&quot;
+host = &quot;hpc&quot;
+auth = &quot;key&quot;
+
+# Key file passed as ssh -i with IdentitiesOnly (optional, key targets only)
+# absolute or starting with &#39;~/&#39;; no &#39;, % or $; no group or other permission bits unless it ends in .pub
+# identity_file = &quot;~/.ssh/id_ed25519_hpc&quot;
+
+# Jump hosts passed as ssh -J (optional, key targets only)
+proxy_jump = &quot;admin@gateway.example.org&quot;  # [user@]host[:port] hops separated by &#39;,&#39;; IPv6 in brackets in the last hop only; &quot;none&quot; (any target) = direct
+
+remote_dir = &quot;/scratch/scientist/campaigns/sim_batch_01&quot;
+</code></pre></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../">« Home</a><a class="docs-footer-nextpage" href="../api/">Library API »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.20.0 on <span class="colophon-date" title="Friday 27 November 2026 15:18">Friday 27 November 2026</span>. Using Julia version 1.13.4.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
