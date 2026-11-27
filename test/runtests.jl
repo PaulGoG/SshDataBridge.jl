@@ -210,9 +210,6 @@ function sets_askpass(cmd::Cmd)::Bool
     return "SSH_ASKPASS_REQUIRE=force" in environment &&
            any(startswith("SSH_ASKPASS="), environment)
 end
-function mentions_askpass(cmd::Cmd)::Bool
-    return any(startswith("SSH_ASKPASS"), cmd_environment(cmd))
-end
 
 # The purge runs as `sh -c '<script>'`, so a recorded invocation carries the quoted path
 # of the script in its escaped form; the path is matched followed by its closing quote.
@@ -1080,7 +1077,7 @@ const DRIVER_SCENARIOS = [(; arguments=["probe"], stub_exit=0, expected=0,
 
         push_cmd = build_push_command(target, globals, push_opts)
         @test push_cmd.exec[1:4] == ["sshpass", "-d", "0", "rsync"]
-        @test push_cmd.env === nothing
+        @test "SSH_ASKPASS_REQUIRE=never" in cmd_environment(push_cmd)
         @test "-a" in push_cmd.exec
         @test !("-av" in push_cmd.exec) && !("-v" in push_cmd.exec)
         @test "--stats" in push_cmd.exec
@@ -1111,7 +1108,7 @@ const DRIVER_SCENARIOS = [(; arguments=["probe"], stub_exit=0, expected=0,
         pull_cmd = build_pull_command(target, globals, pull_opts_resume,
                                       "/local/harvest/RTX-Node")
         @test pull_cmd.exec[1:4] == ["sshpass", "-d", "0", "rsync"]
-        @test pull_cmd.env === nothing
+        @test "SSH_ASKPASS_REQUIRE=never" in cmd_environment(pull_cmd)
         @test pull_cmd.exec[end - 1] == "worker@10.0.0.5:/srv/sim_01/results/"
         @test pull_cmd.exec[end] == "/local/harvest/RTX-Node/"
         @test "--stats" in pull_cmd.exec
@@ -1673,12 +1670,21 @@ const DRIVER_SCENARIOS = [(; arguments=["probe"], stub_exit=0, expected=0,
                                                 remote_dir="/data/k7"), globals,
                                      push_opts).exec[end] == "[2001:db8::10]:/data/k7/"
 
-            # Password targets keep sshpass and set no askpass variables
+            # Password targets keep sshpass and turn off an askpass preference of the
+            # caller, which would take the prompt away from sshpass
             pw = password_target(; user="researcher", port=2222)
-            for cmd in (SshDataBridge.build_ssh_command(pw, globals, "true"),
-                        build_push_command(pw, globals, push_opts))
+            commands = withenv("SSH_ASKPASS_REQUIRE" => "prefer",
+                               "SSH_ASKPASS" => "/usr/bin/ksshaskpass") do
+                return (SshDataBridge.build_ssh_command(pw, globals, "true"),
+                        build_push_command(pw, globals, push_opts),
+                        build_pull_command(pw, globals, pull_opts, "/local/harvest/P"))
+            end
+            for cmd in commands
                 @test cmd.exec[1] == "sshpass"
-                @test !mentions_askpass(cmd)
+                askpass_entries = filter(startswith("SSH_ASKPASS_REQUIRE="),
+                                         cmd_environment(cmd))
+                @test askpass_entries == ["SSH_ASKPASS_REQUIRE=never"]
+                @test !sets_askpass(cmd)
             end
         end
 

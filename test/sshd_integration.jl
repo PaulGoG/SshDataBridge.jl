@@ -169,12 +169,14 @@
 
             # No desktop askpass dialog may appear, should a test regress; a test may set an
             # askpass program and a display of its own to see whether ssh would call it.
-            function drive(args; agent=nothing, askpass=nothing, display=nothing)
+            function drive(args; agent=nothing, askpass=nothing, display=nothing,
+                           askpass_require=nothing)
                 o = IOBuffer()
                 e = IOBuffer()
                 started = time()
                 code = withenv("PATH" => bin * ":" * ENV["PATH"], "SSH_AUTH_SOCK" => agent,
-                               "SSH_ASKPASS" => askpass, "SSH_ASKPASS_REQUIRE" => nothing,
+                               "SSH_ASKPASS" => askpass,
+                               "SSH_ASKPASS_REQUIRE" => askpass_require,
                                "DISPLAY" => display, "WAYLAND_DISPLAY" => nothing) do
                     return SshDataBridge.main(args; io=o, err=e)
                 end
@@ -309,6 +311,32 @@
             end
             r = drive(["probe", "--config", jumped]; agent=socket)
             @test r.code == 0
+
+            # A desktop session that prefers its askpass program does not take the prompt
+            # of a password target away from sshpass, which sends the (wrong) password once.
+            # Last, because sshd (OpenSSH >= 9.8) refuses the source for a few seconds after
+            # a failed authentication.
+            if Sys.which("sshpass") === nothing
+                @info "sshpass not found; password-target loopback test skipped"
+            else
+                password_config = write_config("password",
+                                               ["""
+
+                                                [[targets]]
+                                                name = "pw"
+                                                host = "labalias"
+                                                password = "not-the-password"
+                                                remote_dir = $(toml_string(joinpath(lab, "remote", "pw")))
+                                                """])
+                before = failed_passwords()
+                r = drive(["probe", "--config", password_config]; askpass=recorder,
+                          display=":sshdatabridge-test", askpass_require="prefer")
+                @test r.code == 2
+                @test r.seconds < 10
+                @test !isfile(asked)
+                sleep(0.5)
+                @test failed_passwords() == before + 1
+            end
         finally
             if agent_pid !== nothing
                 run(pipeline(ignorestatus(`kill $agent_pid`); stdout=devnull,

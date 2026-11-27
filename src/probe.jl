@@ -132,12 +132,15 @@ end
 
 Command that runs `arguments`, which start with `"ssh"` or `"rsync"`, for `target`:
 prefixed with `sshpass -d 0` for a password target, which reads the password from
-standard input (see [`run_authenticated`](@ref)); with the environment of
+standard input (see [`run_authenticated`](@ref)), with `SSH_ASKPASS_REQUIRE=never`, since
+with `prefer` or `force` in the caller's environment ssh would ask an askpass program
+instead of the terminal that `sshpass` answers; with the environment of
 [`prompt_refusal_environment`](@ref) for a key target.
 """
 function target_command(target::BridgeTarget, arguments::Vector{String})::Cmd
     if target.auth == :password
-        return Cmd(vcat(String["sshpass", "-d", "0"], arguments))
+        return addenv(Cmd(vcat(String["sshpass", "-d", "0"], arguments)),
+                      "SSH_ASKPASS_REQUIRE" => "never")
     end
     return addenv(Cmd(arguments), prompt_refusal_environment()...)
 end

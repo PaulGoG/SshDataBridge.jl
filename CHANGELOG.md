@@ -18,6 +18,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 - **Breaking:** a push that finds `remote_dir` claimed by another target fails with exit status 97, and the step before the transfer is reported as `Remote directory claim failed` instead of `Remote directory creation failed`.
 - **Breaking** for library use: `BridgeTarget` has the fields `auth`, `identity_file`, and `proxy_jump`, and `port`, `user`, and `password` may be `nothing`. The keyword constructor `BridgeTarget(name, host; remote_dir, ...)` takes every field; the positional constructor still builds a password target. The filter rules of a pull begin with `--exclude=/.sshdatabridge-target`.
 
+### Fixed
+
+- With `SSH_ASKPASS_REQUIRE=prefer` or `force` in the caller's environment, as set up for a graphical askpass program, ssh asked that program for the password of a password target instead of the terminal that `sshpass` answers, and the connection failed or opened a dialog. The commands of a password target run with `SSH_ASKPASS_REQUIRE=never`.
+
 ## [0.6.0] - 2026-11-26
 
 ### Added
