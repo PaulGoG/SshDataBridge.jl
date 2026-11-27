@@ -1814,6 +1814,36 @@ const DRIVER_SCENARIOS = [(; arguments=["probe"], stub_exit=0, expected=0,
             @test occursin("TMPDIR", message)
         end
 
+        # A failed check leaves nothing cached, so that the next call checks again
+        SshDataBridge.PROMPT_REFUSAL_PROGRAM[] = ""
+        with_stub_binaries(; ssh_version="OpenSSH_8.3p1, stub") do _
+            @test_throws ArgumentError SshDataBridge.prompt_refusal_program()
+        end
+        @test isempty(SshDataBridge.PROMPT_REFUSAL_PROGRAM[])
+        program = SshDataBridge.prompt_refusal_program()
+        @test isfile(program)
+
+        # End to end on a file system mounted noexec, where user namespaces allow it: the
+        # program is refused and not cached
+        unshare = Sys.which("unshare")
+        if unshare !== nothing &&
+           success(pipeline(`$(unshare) -rm true`; stdout=devnull, stderr=devnull))
+            mktempdir() do mount_point
+                script = "mount -t tmpfs -o noexec tmpfs \"\$1\" || exit 2; d=\$1; shift; TMPDIR=\$d exec \"\$@\""
+                code = "using SshDataBridge; try; SshDataBridge.prompt_refusal_program(); exit(0); catch e; exit(e isa ArgumentError && occursin(\"cannot be executed\", e.msg) && isempty(SshDataBridge.PROMPT_REFUSAL_PROGRAM[]) ? 3 : 4); end"
+                julia = Base.julia_cmd().exec
+                child = run(addenv(ignorestatus(Cmd([unshare, "-rm", "sh", "-c", script,
+                                                     "sh",
+                                                     mount_point, julia...,
+                                                     "--startup-file=no",
+                                                     "--project=$(Base.active_project())",
+                                                     "-e", code])),
+                                   "JULIA_LOAD_PATH" => nothing,
+                                   "JULIA_PROJECT" => nothing))
+                @test child.exitcode == 3
+            end
+        end
+
         # A copy that has gone is written again
         rm(program)
         rewritten = SshDataBridge.prompt_refusal_program()
@@ -1855,12 +1885,31 @@ const DRIVER_SCENARIOS = [(; arguments=["probe"], stub_exit=0, expected=0,
         query = SshDataBridge.ssh_config_command(explicit, globals)
         @test query.exec[1:2] == ["ssh", "-G"]
         @test query.exec[(end - 1):end] == ["researcher@hpc", "sh -c true"]
+        @test query.exec[(end - 3):(end - 2)] == ["-o", "RemoteCommand=none"]
         @test !("sshpass" in query.exec)
         @test SshDataBridge.ssh_config_command(alias, globals).exec[end - 1] == "hpc"
 
         # ssh -G evaluates a command session, as the commands of the package are:
         # Match sessiontype (OpenSSH 10.0) can tell it from an interactive one
         real_ssh = Sys.which("ssh")
+        # A RemoteCommand of the host's block does not make the query fail
+        if real_ssh !== nothing
+            mktempdir() do dir
+                config = joinpath(dir, "ssh_config")
+                write(config,
+                      "Host rc\n  HostName login.example.org\n  RemoteCommand true\n")
+                bin = mkpath(joinpath(dir, "bin"))
+                write(joinpath(bin, "ssh"),
+                      "#!/bin/sh\nexec $(Base.shell_escape_posixly(real_ssh)) -F " *
+                      "$(Base.shell_escape_posixly(config)) \"\$@\"\n")
+                chmod(joinpath(bin, "ssh"), 0o700)
+                withenv("PATH" => bin * ":" * ENV["PATH"]) do
+                    remote = password_target(; name="R", host="rc")
+                    @test SshDataBridge.resolve_endpoint(remote, globals).hostname ==
+                          "login.example.org"
+                end
+            end
+        end
         version = SshDataBridge.openssh_version()
         if real_ssh !== nothing && version !== nothing && version >= v"10.0"
             mktempdir() do dir
@@ -1983,6 +2032,33 @@ const DRIVER_SCENARIOS = [(; arguments=["probe"], stub_exit=0, expected=0,
                 @test count(==(0), codes) <= 1
                 @test isfile(joinpath(outer_dir, marker)) +
                       isfile(joinpath(inner_dir, marker)) == count(==(0), codes)
+            end
+
+            # A claim that lost the link to a concurrent claim of the same name never removes
+            # the winner's marker: alpha twice on one directory, beta below it, the second
+            # alpha re-checking after beta has linked (scheduled with sleeps)
+            for round in 1:3
+                shared = mkpath(joinpath(root, "same-name-$(round)"))
+                below = joinpath(shared, "sub")
+                second_check = "if [ \$w = 1 ] && ! k;"
+                base_alpha = SshDataBridge.claim_script(shared, "alpha")
+                base_beta = SshDataBridge.claim_script(below, "beta")
+                @test occursin(second_check, base_alpha) &&
+                      occursin(second_check, base_beta)
+                first_alpha = replace(base_alpha, "ln -- " => "sleep 0.05; ln -- ")
+                second_alpha = replace(replace(base_alpha, "ln -- " => "sleep 0.1; ln -- "),
+                                       second_check => "if [ \$w = 1 ] && sleep 0.3 && ! k;")
+                beta = replace(replace(base_beta, "ln -- " => "sleep 0.2; ln -- "),
+                               second_check => "if [ \$w = 1 ] && sleep 0.6 && ! k;")
+                processes = [run(pipeline(ignorestatus(`sh -c $(script)`); stdout=devnull,
+                                          stderr=devnull); wait=false)
+                             for script in (first_alpha, second_alpha, beta)]
+                foreach(wait, processes)
+                codes = [process.exitcode for process in processes]
+                alpha_claimed = codes[1] == 0 || codes[2] == 0
+                @test !(alpha_claimed && codes[3] == 0)
+                @test alpha_claimed == isfile(joinpath(shared, marker))
+                @test (codes[3] == 0) == isfile(joinpath(below, marker))
             end
 
             # On a file system without hard links the claim fails with that reason
@@ -2870,6 +2946,18 @@ const DRIVER_SCENARIOS = [(; arguments=["probe"], stub_exit=0, expected=0,
             end
             @test outcome.exitcode == 1
             @test occursin("could not evaluate its configuration", outcome.output)
+
+            # A dry run checks the prerequisites of key targets as well; a failure is a
+            # precondition error (exit 1), not an exception inside the target tasks
+            for arguments in (["push", "--dry-run"], ["pull", "--dry-run"],
+                              ["clean", "--dry-run"])
+                outcome = with_stub_binaries(; ssh_version="OpenSSH_8.3p1, stub",
+                                             stdout_text=markers) do _
+                    return invoke_driver(arguments, single)
+                end
+                @test outcome.exitcode == 1
+                @test occursin("OpenSSH 8.4", outcome.output)
+            end
 
             # A jump host from the ssh configuration is reported for a password target
             scenario = joinpath(dir, "scenario.toml")

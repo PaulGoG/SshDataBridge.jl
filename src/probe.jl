@@ -35,6 +35,21 @@ function check_local_binaries(targets::AbstractVector{BridgeTarget})
                ("ssh", "sshpass", "rsync") : REQUIRED_LOCAL_BINARIES
     missing_binaries = String[bin for bin in required if Sys.which(bin) === nothing]
     isempty(missing_binaries) || throw(MissingBinaryError(missing_binaries))
+    check_key_target_prerequisites(targets)
+    return nothing
+end
+
+"""
+    check_key_target_prerequisites(targets::AbstractVector{BridgeTarget})
+
+When a key target is among `targets`, require what every command of a key target rests
+on: OpenSSH 8.4 or newer ([`check_openssh_version`](@ref)) and a prompt-refusal program
+that runs ([`prompt_refusal_program`](@ref)); throws their `ArgumentError` otherwise.
+Part of [`check_local_binaries`](@ref), and run on its own by the dry runs of
+[`push_all_targets`](@ref), [`pull_all_targets`](@ref), and
+[`clean_all_remote_targets`](@ref), which need no binaries but still build the commands.
+"""
+function check_key_target_prerequisites(targets::AbstractVector{BridgeTarget})
     if any(target -> target.auth == :key, targets)
         check_openssh_version()
         prompt_refusal_program()
@@ -274,10 +289,14 @@ connects, so the command needs neither `sshpass` nor the environment of
 as the commands of the package are evaluated, a command session, which `Match
 sessiontype` (OpenSSH 10.0) tells apart from an interactive one. A `Match command` block
 that tells the shell commands of the package from rsync's `rsync --server` is not seen.
+`-o RemoteCommand=none` keeps a `RemoteCommand` of the host's block from making the query
+fail ("Cannot execute command-line and remote command"); the commands of such a target
+still fail, that target alone.
 """
 function ssh_config_command(target::BridgeTarget, globals::GlobalOptions)::Cmd
-    return Cmd(String["ssh", "-G", ssh_options(target, globals)...,
-                      target_label(target.host, target.user), remote_shell("true")])
+    return Cmd(String["ssh", "-G", ssh_options(target, globals)..., "-o",
+                      "RemoteCommand=none", target_label(target.host, target.user),
+                      remote_shell("true")])
 end
 
 """
@@ -415,7 +434,9 @@ end
 
 Check SSH reachability of `target`, the presence of `rsync` on the remote host, and the
 existence of the base and output directories. Connection, authentication, and spawn
-failures are reported through the result, never thrown. A key target refused with
+failures are reported through the result, never thrown; only a key target whose
+prerequisites fail ([`check_key_target_prerequisites`](@ref)) raises their
+`ArgumentError` when its command is built. A key target refused with
 `Permission denied`, or whose route raised a prompt (see
 [`prompt_refusal_environment`](@ref)), gets a hint in the message: no prompt is allowed,
 so the key must be in the agent, or a master connection must be open when the host asks
@@ -513,9 +534,12 @@ the status of `ln`, which NFS can report as failed after a lost reply. The physi
 location of the directory is resolved, and the claim is refused when a marker of another
 target lies in any ancestor or anywhere below it, so that a directory nested in the tree
 of another target is caught as well. That check runs before the marker is written and,
-by a claim that wrote it, again afterwards: of two concurrent claims of nested
-directories each writes its own marker before its second check, so at least one of them
-sees the other's marker, removes its own, and refuses (both may refuse). The script
+by a claim whose link created the marker (the marker and its temporary file are one
+inode, which holds after a lost NFS reply as well), again afterwards: of two concurrent
+claims of nested directories each writes its own marker before its second check, so at
+least one of them sees the other's marker, removes its own, and refuses (both may
+refuse). A claim that found the marker in place, or lost the link to a concurrent claim
+of the same name, never removes it. The script
 exits 0 when the marker names `name`, 1 when the directory or the marker cannot be
 created, entered, or read (a file system without hard links included), and 97 when the
 marker, or one above or below the directory, names another target: the nodes share
@@ -535,7 +559,7 @@ function claim_script(remote_dir::AbstractString, name::AbstractString)::String
                  "k() { x=\$r; while [ \"\$x\" != / ]; do x=\$(dirname -- \"\$x\"); if [ -f \"\$x/$(marker)\" ]; then o=\$(cat -- \"\$x/$(marker)\") || o='?'; if [ \"\$o\" != \"\$n\" ]; then echo \"push refused: \$d lies inside \$x, which is in use by target '\$o'\" >&2; return 97; fi; fi; done; f=\$(find \"\$r\" -type f -name $(marker) ! -path \"\$r/$(marker)\" ! -exec grep -qxF -e \"\$n\" {} \\; -print 2>/dev/null | head -n 1); if [ -n \"\$f\" ]; then echo \"push refused: \$d contains \$f of another target\" >&2; return 97; fi; return 0; }",
                  "k || exit 97",
                  "w=0",
-                 "if [ ! -f \"\$m\" ]; then w=1; t=\"\$m.\$(uname -n).\$\$\"; printf '%s\\n' \"\$n\" > \"\$t\" || exit 1; ln -- \"\$t\" \"\$m\" 2>/dev/null; rm -f -- \"\$t\"; fi",
+                 "if [ ! -f \"\$m\" ]; then t=\"\$m.\$(uname -n).\$\$\"; printf '%s\\n' \"\$n\" > \"\$t\" || exit 1; ln -- \"\$t\" \"\$m\" 2>/dev/null; if [ \"\$t\" -ef \"\$m\" ]; then w=1; fi; rm -f -- \"\$t\"; fi",
                  "if [ ! -f \"\$m\" ]; then echo \"push refused: \$m could not be created; the claim needs a file system with hard links\" >&2; exit 1; fi",
                  "o=\$(cat -- \"\$m\") || exit 1",
                  "if [ \"\$o\" != \"\$n\" ]; then echo \"push refused: \$d is in use by target '\$o': the nodes share storage, or two targets name one directory\" >&2; exit 97; fi",
@@ -664,7 +688,8 @@ concurrently.
 """
 function clean_all_remote_targets(config::BridgeConfig;
                                   dry_run::Bool=false)::Vector{TransferResult}
-    dry_run || check_local_binaries(config.targets)
+    dry_run ? check_key_target_prerequisites(config.targets) :
+    check_local_binaries(config.targets)
     scope = config.pull.purge_scope
     @info "Purging remote directories" total_targets=length(config.targets) scope=scope dry_run=dry_run
     return map_targets(target -> clean_remote_target(target, config.globals; scope=scope,

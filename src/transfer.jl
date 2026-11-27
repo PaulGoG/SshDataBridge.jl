@@ -472,7 +472,8 @@ set, it must also be a clean git working tree. Both checks run in dry-run mode a
 """
 function push_all_targets(config::BridgeConfig;
                           dry_run::Bool=false)::Vector{TransferResult}
-    dry_run || check_local_binaries(config.targets)
+    dry_run ? check_key_target_prerequisites(config.targets) :
+    check_local_binaries(config.targets)
     if !isdir(config.push.local_source_dir)
         throw(ArgumentError("Push parameter 'local_source_dir' is not an existing directory: '$(config.push.local_source_dir)'."))
     end
@@ -494,7 +495,8 @@ function pull_all_targets(config::BridgeConfig; dry_run::Bool=false,
     if clean_remote && !isempty(config.pull.includes)
         throw(ArgumentError("A purge cannot follow a harvest narrowed by '[pull].includes': files left behind by the filter would be destroyed."))
     end
-    dry_run || check_local_binaries(config.targets)
+    dry_run ? check_key_target_prerequisites(config.targets) :
+    check_local_binaries(config.targets)
     @info "Pulling from all targets" total_targets=length(config.targets) destination=config.pull.local_destination_root clean_remote=clean_remote dry_run=dry_run
     return map_targets(target -> pull_target(target, config; dry_run=dry_run,
                                              clean_remote=clean_remote), config.targets,
