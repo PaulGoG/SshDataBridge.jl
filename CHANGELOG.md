@@ -4,6 +4,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-27
+
 ### Added
 
 - Key-based targets: `auth = "key"` lets `ssh` authenticate by itself (agent, identity file, certificate, master connection) and never prompts. Its commands run with `BatchMode=yes`, and with `SSH_ASKPASS_REQUIRE=force` and an `SSH_ASKPASS` program of the package, which reach the ssh of a jump host where `BatchMode` does not: the program reports the prompt and terminates the ssh that asked, so that no prompt reaches the terminal or a desktop dialog and no empty password reaches a jump host. Key targets require OpenSSH 8.4 or newer on the workstation, and a `TMPDIR` from which the program can be executed: it is run once before use, since ssh answers with an empty string when it cannot run it. A host that asks for a second factor needs a master connection opened beforehand. When a probe of a key target fails on a refused prompt, `Permission denied`, or `Host key verification failed`, the message says what was refused and names the interactive `ssh` command, with the port, identity file, and jump hosts of the target, that resolves it. `auth = "password"` is the default and behaves as before. `sshpass` is required only with a password target.
@@ -140,7 +142,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); ver
 - Optional clean-git-tree requirement for deployments, evaluated in the configured source directory.
 - Test suite with static analysis (Aqua, JET, ExplicitImports) and a stub-binary harness that exercises the process execution paths without network access; formatting enforced by a dedicated `format/` environment and CI job.
 
-[Unreleased]: https://github.com/PaulGoG/SshDataBridge.jl/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/PaulGoG/SshDataBridge.jl/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/PaulGoG/SshDataBridge.jl/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/PaulGoG/SshDataBridge.jl/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/PaulGoG/SshDataBridge.jl/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/PaulGoG/SshDataBridge.jl/compare/v0.3.0...v0.4.0
