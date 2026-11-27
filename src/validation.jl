@@ -88,9 +88,11 @@ or exactly `none`, which disables a `ProxyJump` or `ProxyCommand` set in ~/.ssh/
 Each user must be a valid account name, each host a valid host name, alias, or IPv4
 address (an IPv6 literal only in brackets), and each port lie in `1:65535`. Empty
 specifications and hops, control characters, and `ssh://` URIs are refused. A bracketed
-IPv6 host is accepted in the last hop only: OpenSSH hands the hops before the last to
-`/bin/sh` unquoted, inside the command it builds for the last jump host, and the shell
-would read the brackets as a glob pattern.
+IPv6 host is accepted in the last hop only: OpenSSH inserts the hops before the last
+unquoted into the command it builds for the last jump host and runs that command with
+the user's shell (`\$SHELL -c`), which would read the brackets as a glob pattern. The
+other characters a hop admits (letters, digits, `.`, `_`, `-`, `@`, `:`, `,`) are not
+special to the usual shells.
 """
 function is_valid_proxy_jump(spec::AbstractString)::Bool
     spec == "none" && return true

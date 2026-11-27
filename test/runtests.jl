@@ -36,13 +36,16 @@ case " $* " in
             printf '%s\n' "${STUB_STDERR:-stub stderr}" >&2
             exit "$STUB_G_EXIT_CODE"
         fi
+        # The destination precedes the placeholder command "sh -c true"
         port=22
         previous=""
+        destination=""
         for argument in "$@"; do
             if [ "$previous" = "-p" ]; then port="$argument"; fi
+            if [ "$argument" = "sh -c true" ]; then destination="$previous"; fi
             previous="$argument"
         done
-        destination="$previous"
+        [ -n "$destination" ] || destination="$previous"
         host="${destination#*@}"
         case "$destination" in
             *@*) user="${destination%%@*}" ;;
@@ -1459,6 +1462,20 @@ const DRIVER_SCENARIOS = [(; arguments=["probe"], stub_exit=0, expected=0,
                  "2001:db8::1")
                 @test_throws ArgumentError key_target(identity; proxy_jump=spec)
             end
+            # ssh runs the hops through $SHELL unquoted: nothing a shell reads is admitted
+            for spec in ("gw;id", "\$(id)@gw", "`id`@gw", "a|b", "gw&", "gw*", "gw?",
+                         "~u@gw", "=gw", "a b@gw", "gw>x", "gw'", "gw\"", "gw\\x", "gw#",
+                         "gw{a,b}", "gw!")
+                @test !SshDataBridge.is_valid_proxy_jump(spec)
+            end
+            # ssh reads "none" in any letter case; every spelling means a direct connection
+            for spelling in ("NONE", "None")
+                direct = key_target(identity; proxy_jump=spelling)
+                @test direct.proxy_jump == "none"
+                @test SshDataBridge.ssh_options(direct, GlobalOptions())[(end - 1):end] ==
+                      ["-o", "ProxyCommand=none"]
+                @test password_target(; proxy_jump=spelling).proxy_jump == "none"
+            end
 
             # Addresses and printed representations
             @test SshDataBridge.target_address(target) == "hpc"
@@ -1779,6 +1796,24 @@ const DRIVER_SCENARIOS = [(; arguments=["probe"], stub_exit=0, expected=0,
                        ": Enter passphrase for key '/k/id':", reported)
         @test !occursin("second line", reported)
 
+        # Two arguments, which ssh never passes, are the self-test; one is a prompt
+        @test success(Cmd([program, "--self-test", "sshdatabridge"]))
+        single = run(pipeline(ignorestatus(`sh -c "\"\$1\" --self-test; echo survived" sh $(program)`);
+                              stdin=devnull, stdout=out, stderr=devnull))
+        @test single.termsignal == 15
+        @test !occursin("survived", String(take!(out)))
+        @test SshDataBridge.check_prompt_refusal_program(program) === nothing
+        # A copy ssh could not execute (a noexec mount, here a missing execute bit) is
+        # refused, since ssh would answer the prompt with an empty string
+        mktempdir() do dir
+            copy = joinpath(dir, "refuse-prompt")
+            write(copy, SshDataBridge.PROMPT_REFUSAL_SCRIPT)
+            chmod(copy, 0o600)
+            message = refusal_message(() -> SshDataBridge.check_prompt_refusal_program(copy))
+            @test occursin("cannot be executed", message)
+            @test occursin("TMPDIR", message)
+        end
+
         # A copy that has gone is written again
         rm(program)
         rewritten = SshDataBridge.prompt_refusal_program()
@@ -1819,9 +1854,28 @@ const DRIVER_SCENARIOS = [(; arguments=["probe"], stub_exit=0, expected=0,
         explicit = password_target(; name="K", host="hpc", port=2222, user="researcher")
         query = SshDataBridge.ssh_config_command(explicit, globals)
         @test query.exec[1:2] == ["ssh", "-G"]
-        @test query.exec[end] == "researcher@hpc"
+        @test query.exec[(end - 1):end] == ["researcher@hpc", "sh -c true"]
         @test !("sshpass" in query.exec)
-        @test SshDataBridge.ssh_config_command(alias, globals).exec[end] == "hpc"
+        @test SshDataBridge.ssh_config_command(alias, globals).exec[end - 1] == "hpc"
+
+        # ssh -G evaluates a command session, as the commands of the package are:
+        # Match sessiontype (OpenSSH 10.0) can tell it from an interactive one
+        real_ssh = Sys.which("ssh")
+        version = SshDataBridge.openssh_version()
+        if real_ssh !== nothing && version !== nothing && version >= v"10.0"
+            mktempdir() do dir
+                config = joinpath(dir, "ssh_config")
+                write(config, "Match host hpc sessiontype exec\n  Port 2222\n")
+                bin = mkpath(joinpath(dir, "bin"))
+                write(joinpath(bin, "ssh"),
+                      "#!/bin/sh\nexec $(Base.shell_escape_posixly(real_ssh)) -F " *
+                      "$(Base.shell_escape_posixly(config)) \"\$@\"\n")
+                chmod(joinpath(bin, "ssh"), 0o700)
+                withenv("PATH" => bin * ":" * ENV["PATH"]) do
+                    @test SshDataBridge.resolve_endpoint(alias, globals).port == 2222
+                end
+            end
+        end
 
         with_stub_binaries(; g_hostnames="hpc=login.example.org") do args_file
             resolved = SshDataBridge.resolve_endpoint(alias, globals)
@@ -1907,6 +1961,42 @@ const DRIVER_SCENARIOS = [(; arguments=["probe"], stub_exit=0, expected=0,
                 @test !any(startswith(".sshdatabridge-target."), readdir(dir))
             end
 
+            # Concurrent claims of nested directories never both succeed: a claim that wrote
+            # its marker checks again and withdraws the marker on a conflict. Both may
+            # refuse. The widened window puts each link after the other's first check.
+            for round in 1:20, widen in (false, true)
+                outer_dir = mkpath(joinpath(root, "nested-race-$(round)-$(widen)"))
+                inner_dir = joinpath(outer_dir, "sub")
+                scripts = [SshDataBridge.claim_script(outer_dir, "alpha"),
+                           SshDataBridge.claim_script(inner_dir, "beta")]
+                if widen
+                    @test all(script -> occursin("ln -- ", script), scripts)
+                    scripts = [replace(script, "ln -- " => "sleep 0.05; ln -- ")
+                               for script in scripts]
+                end
+                processes = [run(pipeline(ignorestatus(`sh -c $(script)`); stdout=devnull,
+                                          stderr=devnull); wait=false)
+                             for script in scripts]
+                foreach(wait, processes)
+                codes = [process.exitcode for process in processes]
+                @test all(in((0, 97)), codes)
+                @test count(==(0), codes) <= 1
+                @test isfile(joinpath(outer_dir, marker)) +
+                      isfile(joinpath(inner_dir, marker)) == count(==(0), codes)
+            end
+
+            # On a file system without hard links the claim fails with that reason
+            mktempdir() do bin
+                write(joinpath(bin, "ln"), "#!/bin/sh\nexit 1\n")
+                chmod(joinpath(bin, "ln"), 0o700)
+                linkless = joinpath(root, "linkless")
+                outcome = withenv(() -> run_claim(linkless, "alpha"),
+                                  "PATH" => bin * ":" * ENV["PATH"])
+                @test outcome.exitcode == 1
+                @test occursin("hard links", outcome.stderr)
+                @test isempty(readdir(linkless))
+            end
+
             # A directory nested in the tree of another target is refused, in either
             # order of the two claims
             outer = joinpath(root, "outer")
@@ -1938,6 +2028,19 @@ const DRIVER_SCENARIOS = [(; arguments=["probe"], stub_exit=0, expected=0,
                 run(pipeline(`rsync -a $(filters) $(source)/ $(claimed)/`; stdout=devnull))
                 @test read(joinpath(claimed, marker), String) == "alpha\n"
                 @test isfile(joinpath(claimed, "run.jl"))
+
+                # A harvest with output_subdir = "." starts at the claimed directory: the
+                # marker is neither copied nor compared by the verification pass
+                harvest_dir = mkpath(joinpath(root, "harvest-alpha"))
+                base = SshDataBridge.rsync_base_arguments(GlobalOptions())
+                filters = SshDataBridge.pull_filter_arguments(PullOptions(harvest_dir))
+                run(pipeline(Cmd([base..., filters..., claimed * "/", harvest_dir * "/"]);
+                             stdout=devnull))
+                @test isfile(joinpath(harvest_dir, "run.jl"))
+                @test !ispath(joinpath(harvest_dir, marker))
+                pending = read(Cmd([base..., "--dry-run", "--itemize-changes", filters...,
+                                    claimed * "/", harvest_dir * "/"]), String)
+                @test isempty(pending)
             end
 
             # A purge honours the marker of the directory
@@ -2392,6 +2495,10 @@ const DRIVER_SCENARIOS = [(; arguments=["probe"], stub_exit=0, expected=0,
                     @test !result.ssh_ok
                     @test occursin(fragment, result.message)
                     @test occursin("($(command))", result.message)
+                    # ssh -fN serves later connections only through a ControlPath
+                    if fragment == "allows no prompt"
+                        @test occursin("ControlMaster and ControlPath", result.message)
+                    end
                 end
             end
             with_stub_binaries(; exit_code=255,

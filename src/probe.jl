@@ -11,14 +11,9 @@ Version of the `ssh` client in `PATH` as `ssh -V` reports it (`OpenSSH_9.9p2, ..
 `v"9.9"`), or `nothing` when `ssh` cannot be run or is not OpenSSH.
 """
 function openssh_version()::Union{Nothing, VersionNumber}
-    report = IOBuffer()
-    try
-        run(pipeline(ignorestatus(`ssh -V`); stdin=devnull, stdout=report, stderr=report))
-    catch err
-        err isa Base.IOError || rethrow()
-        return nothing
-    end
-    m = match(r"OpenSSH_(\d+)\.(\d+)", String(take!(report)))
+    # run_captured reads both streams to end-of-file; see run_authenticated on Julia 1.10
+    outcome = run_captured(`ssh -V`)
+    m = match(r"OpenSSH_(\d+)\.(\d+)", outcome.stderr * outcome.stdout)
     m === nothing && return nothing
     # Both groups are mandatory, so they captured whenever the pattern matched
     return VersionNumber(parse(Int, m[1]::AbstractString), parse(Int, m[2]::AbstractString))
@@ -31,8 +26,9 @@ Verify that `ssh` and `rsync` are available in `PATH`, and `sshpass` as well whe
 password target is among `targets`. Throws [`MissingBinaryError`](@ref) naming the
 missing binaries otherwise. When a key target is among `targets`, `ssh` must be OpenSSH
 8.4 or newer, whose `SSH_ASKPASS_REQUIRE` keeps every prompt off the terminal (see
-[`prompt_refusal_environment`](@ref)); an older or unidentified client is refused with
-an `ArgumentError`.
+[`prompt_refusal_environment`](@ref)), and [`prompt_refusal_program`](@ref) must be able
+to run; an older or unidentified client, or a program that cannot be executed, is
+refused with an `ArgumentError`.
 """
 function check_local_binaries(targets::AbstractVector{BridgeTarget})
     required = any(target -> target.auth == :password, targets) ?
@@ -40,12 +36,25 @@ function check_local_binaries(targets::AbstractVector{BridgeTarget})
     missing_binaries = String[bin for bin in required if Sys.which(bin) === nothing]
     isempty(missing_binaries) || throw(MissingBinaryError(missing_binaries))
     if any(target -> target.auth == :key, targets)
-        version = openssh_version()
-        if version === nothing || version < MINIMUM_OPENSSH_VERSION
-            found = version === nothing ? "an ssh that does not report an OpenSSH version" :
-                    "OpenSSH $(version.major).$(version.minor)"
-            throw(ArgumentError("Key targets need OpenSSH $(MINIMUM_OPENSSH_VERSION.major).$(MINIMUM_OPENSSH_VERSION.minor) or newer on this machine, whose SSH_ASKPASS_REQUIRE keeps the prompts of jump hosts off the terminal; found $(found)."))
-        end
+        check_openssh_version()
+        prompt_refusal_program()
+    end
+    return nothing
+end
+
+"""
+    check_openssh_version()
+
+Throw an `ArgumentError` unless the `ssh` in `PATH` reports OpenSSH 8.4 or newer, the
+first release that honours `SSH_ASKPASS_REQUIRE`, on which the prompt refusal of key
+targets rests.
+"""
+function check_openssh_version()
+    version = openssh_version()
+    if version === nothing || version < MINIMUM_OPENSSH_VERSION
+        found = version === nothing ? "an ssh that does not report an OpenSSH version" :
+                "OpenSSH $(version.major).$(version.minor)"
+        throw(ArgumentError("Key targets need OpenSSH $(MINIMUM_OPENSSH_VERSION.major).$(MINIMUM_OPENSSH_VERSION.minor) or newer on this machine, whose SSH_ASKPASS_REQUIRE keeps the prompts of jump hosts off the terminal; found $(found)."))
     end
     return nothing
 end
@@ -79,6 +88,8 @@ end
 # program ends the ssh that asked, after reporting the first line of the prompt.
 const PROMPT_REFUSAL_SCRIPT = """
     #!/bin/sh
+    # ssh passes one argument, the prompt; two are the self-test of prompt_refusal_program
+    [ "\$#" -eq 2 ] && [ "\$1" = --self-test ] && exit 0
     printf 'prompt refused, auth = "key" allows none: %s\\n' "\$(printf '%s\\n' "\$1" | head -n 1)" >&2
     kill -TERM "\$PPID"
     exit 1
@@ -91,19 +102,37 @@ const PROMPT_REFUSAL_PROGRAM = Ref("")
 const PROMPT_REFUSAL_LOCK = ReentrantLock()
 
 """
+    check_prompt_refusal_program(path::AbstractString)
+
+Run the prompt-refusal program at `path` in its self-test mode, two arguments, which ssh
+never passes, and throw an `ArgumentError` unless it exits 0: ssh answers a prompt with
+an empty string when it cannot execute the program, for instance from a file system
+mounted `noexec`, which is the empty password the program exists to prevent.
+"""
+function check_prompt_refusal_program(path::AbstractString)
+    if run_captured(Cmd([String(path), "--self-test", "sshdatabridge"])).exitcode != 0
+        throw(ArgumentError("Key targets need the prompt-refusal program of SshDataBridge, but $(path) cannot be executed (a file system mounted noexec?); set TMPDIR to a directory that allows execution."))
+    end
+    return nothing
+end
+
+"""
     prompt_refusal_program()::String
 
 Path of an executable copy of the prompt-refusal script, written on first use into a
 private temporary directory that Julia removes at exit, and written again when the copy
-has gone.
+has gone. A new copy must pass [`check_prompt_refusal_program`](@ref), and the ssh in `PATH`
+[`check_openssh_version`](@ref); throws the `ArgumentError` of either otherwise.
 """
 function prompt_refusal_program()::String
     return lock(PROMPT_REFUSAL_LOCK) do
         path = PROMPT_REFUSAL_PROGRAM[]
         if isempty(path) || !isfile(path)
+            check_openssh_version()
             path = joinpath(mktempdir(; prefix="sshdatabridge-"), "refuse-prompt")
             write(path, PROMPT_REFUSAL_SCRIPT)
             chmod(path, 0o700)
+            check_prompt_refusal_program(path)
             PROMPT_REFUSAL_PROGRAM[] = path
         end
         return path
@@ -238,13 +267,17 @@ end
 """
     ssh_config_command(target::BridgeTarget, globals::GlobalOptions)::Cmd
 
-`ssh -G` with the options of [`ssh_options`](@ref) and the destination of `target`: ssh
-prints the configuration it would use and never connects, so the command needs neither
-`sshpass` nor the environment of [`prompt_refusal_environment`](@ref).
+`ssh -G` with the options of [`ssh_options`](@ref), the destination of `target`, and the
+remote command `sh -c true`: ssh prints the configuration it would use and never
+connects, so the command needs neither `sshpass` nor the environment of
+[`prompt_refusal_environment`](@ref). The remote command makes ssh evaluate the session
+as the commands of the package are evaluated, a command session, which `Match
+sessiontype` (OpenSSH 10.0) tells apart from an interactive one. A `Match command` block
+that tells the shell commands of the package from rsync's `rsync --server` is not seen.
 """
 function ssh_config_command(target::BridgeTarget, globals::GlobalOptions)::Cmd
     return Cmd(String["ssh", "-G", ssh_options(target, globals)...,
-                      target_label(target.host, target.user)])
+                      target_label(target.host, target.user), remote_shell("true")])
 end
 
 """
@@ -411,7 +444,7 @@ function probe_target(target::BridgeTarget, globals::GlobalOptions)::ProbeResult
             detail *= "; auth = \"key\" cannot confirm a host key, and strict_host_key_checking does not reach a jump host: if the key is unknown, record it with one interactive login ($(interactive_ssh_command(target))); a changed key needs your own check"
         elseif target.auth == :key &&
                (refused || occursin("Permission denied", outcome.stderr))
-            detail *= "; auth = \"key\" allows no prompt: load the key into the agent, or, if the host asks for a second factor, open a master connection first ($(interactive_ssh_command(target; master=true)))"
+            detail *= "; auth = \"key\" allows no prompt: load the key into the agent, or, if the host asks for a second factor, set ControlMaster and ControlPath for it in ~/.ssh/config and open a master connection first ($(interactive_ssh_command(target; master=true)))"
         end
         push!(messages, detail)
     else
@@ -475,12 +508,16 @@ One-line POSIX shell script, run under `sh -c`, that creates `remote_dir` with
 is written to a temporary file named after the node and the shell's process ID, then
 hard-linked into place; the link is atomic and fails when the marker exists, also over
 NFS, where `O_EXCL` is not reliable on every server (open(2)). Of two concurrent claims
-exactly one marker is written, and both read it back rather than trust the status of
-`ln`, which NFS can report as failed after a lost reply. Before that, the physical
+of one directory exactly one marker is written, and both read it back rather than trust
+the status of `ln`, which NFS can report as failed after a lost reply. The physical
 location of the directory is resolved, and the claim is refused when a marker of another
 target lies in any ancestor or anywhere below it, so that a directory nested in the tree
-of another target is caught as well. The script exits 0 when the marker names `name`, 1
-when the directory or the marker cannot be created, entered, or read, and 97 when the
+of another target is caught as well. That check runs before the marker is written and,
+by a claim that wrote it, again afterwards: of two concurrent claims of nested
+directories each writes its own marker before its second check, so at least one of them
+sees the other's marker, removes its own, and refuses (both may refuse). The script
+exits 0 when the marker names `name`, 1 when the directory or the marker cannot be
+created, entered, or read (a file system without hard links included), and 97 when the
 marker, or one above or below the directory, names another target: the nodes share
 storage, or two targets name one directory or nested ones. The refusal states its reason
 on standard error. `remote_dir` and `name` are POSIX-quoted.
@@ -494,14 +531,17 @@ function claim_script(remote_dir::AbstractString, name::AbstractString)::String
                  "m=\"\$d/$(marker)\"",
                  "mkdir -p -- \"\$d\" || exit 1",
                  "r=\$(cd -- \"\$d\" && pwd -P) || exit 1",
-                 "x=\$r; while [ \"\$x\" != / ]; do x=\$(dirname -- \"\$x\"); if [ -f \"\$x/$(marker)\" ]; then o=\$(cat -- \"\$x/$(marker)\") || o='?'; if [ \"\$o\" != \"\$n\" ]; then echo \"push refused: \$d lies inside \$x, which is in use by target '\$o'\" >&2; exit 97; fi; fi; done",
-                 "f=\$(find \"\$r\" -type f -name $(marker) ! -path \"\$r/$(marker)\" ! -exec grep -qxF -e \"\$n\" {} \\; -print 2>/dev/null | head -n 1)",
-                 "if [ -n \"\$f\" ]; then echo \"push refused: \$d contains \$f of another target\" >&2; exit 97; fi",
-                 "if [ ! -f \"\$m\" ]; then t=\"\$m.\$(uname -n).\$\$\"; printf '%s\\n' \"\$n\" > \"\$t\" || exit 1; ln -- \"\$t\" \"\$m\" 2>/dev/null; rm -f -- \"\$t\"; fi",
+                 # k: refuses (status 97) when a marker of another target lies above or below
+                 "k() { x=\$r; while [ \"\$x\" != / ]; do x=\$(dirname -- \"\$x\"); if [ -f \"\$x/$(marker)\" ]; then o=\$(cat -- \"\$x/$(marker)\") || o='?'; if [ \"\$o\" != \"\$n\" ]; then echo \"push refused: \$d lies inside \$x, which is in use by target '\$o'\" >&2; return 97; fi; fi; done; f=\$(find \"\$r\" -type f -name $(marker) ! -path \"\$r/$(marker)\" ! -exec grep -qxF -e \"\$n\" {} \\; -print 2>/dev/null | head -n 1); if [ -n \"\$f\" ]; then echo \"push refused: \$d contains \$f of another target\" >&2; return 97; fi; return 0; }",
+                 "k || exit 97",
+                 "w=0",
+                 "if [ ! -f \"\$m\" ]; then w=1; t=\"\$m.\$(uname -n).\$\$\"; printf '%s\\n' \"\$n\" > \"\$t\" || exit 1; ln -- \"\$t\" \"\$m\" 2>/dev/null; rm -f -- \"\$t\"; fi",
+                 "if [ ! -f \"\$m\" ]; then echo \"push refused: \$m could not be created; the claim needs a file system with hard links\" >&2; exit 1; fi",
                  "o=\$(cat -- \"\$m\") || exit 1",
-                 "[ \"\$o\" = \"\$n\" ] && exit 0",
-                 "echo \"push refused: \$d is in use by target '\$o': the nodes share storage, or two targets name one directory\" >&2",
-                 "exit 97"], "; ")
+                 "if [ \"\$o\" != \"\$n\" ]; then echo \"push refused: \$d is in use by target '\$o': the nodes share storage, or two targets name one directory\" >&2; exit 97; fi",
+                 # A claim that wrote its marker checks again, against a nested claim made meanwhile
+                 "if [ \$w = 1 ] && ! k; then rm -f -- \"\$m\"; exit 97; fi",
+                 "exit 0"], "; ")
 end
 
 """

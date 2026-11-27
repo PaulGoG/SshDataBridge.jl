@@ -54,8 +54,8 @@ A remote compute node and the layout of its campaign directory.
   selecting an agent key, stored with a leading `~/` expanded
   (`-i <path> -o IdentitiesOnly=yes`).
 - `proxy_jump::Union{Nothing, String}`: jump-host specification of a key target (`-J`),
-  or `"none"` (any target) to connect directly whatever ~/.ssh/config routes
-  (`-o ProxyCommand=none`).
+  or `"none"` (any target; accepted in any letter case and stored as `"none"`) to connect
+  directly whatever ~/.ssh/config routes (`-o ProxyCommand=none`).
 - `remote_dir::String`: absolute base directory of the campaign on the remote host.
 - `output_subdir::String`: output directory relative to `remote_dir` (default `"output"`).
 - `strict_host_key_checking::Union{String, Nothing}`: optional host key policy override.
@@ -114,8 +114,12 @@ struct BridgeTarget
         # A password target is refused for having identity_file at all, whatever its form
         key_path = identity_file === nothing || method != :key ? identity_file :
                    expand_identity_file(identity_file, "target '$(name)'")
+        # ssh reads "none" in any letter case as the keyword; "NONE" would otherwise pass as
+        # a hop and reach ssh as -J NONE, which leaves a ProxyCommand of ~/.ssh/config active
+        jump = proxy_jump !== nothing && lowercase(proxy_jump) == "none" ? "none" :
+               proxy_jump
         validate_bridge_target_fields(name, host, port, user, method, password, key_path,
-                                      proxy_jump, remote_dir, output_subdir,
+                                      jump, remote_dir, output_subdir,
                                       strict_host_key_checking)
         return new(String(name),
                    String(host),
@@ -124,7 +128,7 @@ struct BridgeTarget
                    method,
                    password === nothing ? nothing : String(password),
                    key_path === nothing ? nothing : String(key_path),
-                   proxy_jump === nothing ? nothing : String(proxy_jump),
+                   jump === nothing ? nothing : String(jump),
                    String(rstrip(normpath(remote_dir), '/')),
                    String(rstrip(normpath(output_subdir), '/')),
                    strict_host_key_checking === nothing ? nothing :
