@@ -22,7 +22,7 @@ Recursive deletion on a remote host is refused for the filesystem root, `/root`,
 - Host key policy `"no"` disables protection against a substituted host; the default `"accept-new"` trusts a host on first contact.
 - `sshpass` answers the first password prompt it sees. A password target accepts no `proxy_jump` other than `"none"`, and the driver warns when `~/.ssh/config` routes one through a jump host, but it does not stop it: if that jump host asks for a password, it receives the target's.
 - A `ProxyCommand` of `~/.ssh/config` that starts another ssh client is outside the OpenSSH 8.4 check; an older client there can read the terminal.
-- On NFS, attribute caching can hide a just-written ownership marker from another node for up to a minute, so two claims of nested directories from different nodes within that time can both pass. A later purge of either is still refused.
+- On NFS, attribute caching can hide a just-written ownership marker from another node for the attribute-cache timeout (up to a minute by default), so two claims of nested directories from different nodes within that time can both pass. A later purge of either is still refused.
 
 ## Reporting a vulnerability
 
